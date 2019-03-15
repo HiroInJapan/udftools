@@ -33,11 +33,16 @@
 #include "options.h"
 
 // Local function protypes
-uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size, uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth, uint32_t uuid, struct fileInfo info, vds_sequence_t *seq );
+uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                 uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
+                 uint32_t uuid, struct fileInfo info, vds_sequence_t *seq );
 void increment_used_space(struct filesystemStats *stats, uint64_t increment, uint32_t position);
-uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size, uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos, struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq, uint8_t *status);
+uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                    uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos,
+                    struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq, uint8_t *status);
 void print_file_chunks(struct filesystemStats *stats);
-int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t sectorsize, uint32_t sourcePosition, uint32_t destinationPosition, size_t size);
+int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+                    uint32_t sourcePosition, uint32_t destinationPosition, size_t size);
 int append_error(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds, uint8_t error);
 uint8_t get_error(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds);
 
@@ -335,16 +340,16 @@ void print_file_info(struct fileInfo info, uint32_t depth) {
     msg("\n");
 }
 
-void sync_chunk(uint8_t **dev, uint32_t chunk, size_t st_size) {
+static void sync_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize) {
     uint32_t chunksize = CHUNK_SIZE;
-    uint64_t rest = st_size%chunksize;
+    uint64_t rest = devsize % chunksize;
     if(dev[chunk] != NULL) {
 #ifndef MEMTRACE
         dbg("Going to sync chunk #%d\n", chunk);
 #else
         dbg("Going to sync chunk #%d, ptr: %p\n", chunk, dev[chunk]);
 #endif
-        if(rest > 0 && chunk==st_size/chunksize) {
+        if((rest > 0) && (chunk == (devsize / chunksize))) {
             dbg("\tRest used\n");
             msync(dev[chunk], chunksize, MS_SYNC);
         } else {
@@ -357,17 +362,17 @@ void sync_chunk(uint8_t **dev, uint32_t chunk, size_t st_size) {
     }
 }
 
-void unmap_chunk(uint8_t **dev, uint32_t chunk, size_t st_size) {
+void unmap_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize) {
     uint32_t chunksize = CHUNK_SIZE;
-    uint64_t rest = st_size%chunksize;
+    uint64_t rest = devsize % chunksize;
     if(dev[chunk] != NULL) {
-        sync_chunk(dev, chunk, st_size);
+        sync_chunk(dev, chunk, devsize);
 #ifndef MEMTRACE
         dbg("Going to unmap chunk #%d\n", chunk);
 #else
         dbg("Going to unmap chunk #%d, ptr: %p\n", chunk, dev[chunk]);
 #endif
-        if(rest > 0 && chunk==st_size/chunksize) {
+        if((rest > 0) && (chunk == (devsize / chunksize))) {
             dbg("\tRest used\n");
             munmap(dev[chunk], rest);
         } else {
@@ -384,9 +389,9 @@ void unmap_chunk(uint8_t **dev, uint32_t chunk, size_t st_size) {
     }
 }
 
-void map_chunk(int fd, uint8_t **dev, uint32_t chunk, size_t st_size, char * file, int line) {
+void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * file, int line) {
     uint32_t chunksize = CHUNK_SIZE;
-    uint64_t rest = st_size%chunksize;
+    uint64_t rest = devsize % chunksize;
     if(dev[chunk] != NULL) {
         dbg("\tChunk #%d is already mapped.\n", chunk);
         return;
@@ -394,7 +399,7 @@ void map_chunk(int fd, uint8_t **dev, uint32_t chunk, size_t st_size, char * fil
 #ifdef MEMTRACE
     dbg("[MEMTRACE] map_chunk source call: %s:%d\n", file, line);
 #endif
-    dbg("\tSize: 0x%x, chunk size 0x%x, rest: 0x%x\n", st_size, chunksize, rest);
+    dbg("\tSize: 0x%" PRIx64 ", chunk size 0x%x, rest: 0x%x\n", devsize, chunksize, rest);
 
     int prot = PROT_READ;
     // If is there some request for corrections, we need read/write access to medium
@@ -403,8 +408,8 @@ void map_chunk(int fd, uint8_t **dev, uint32_t chunk, size_t st_size, char * fil
         dbg("\tRW\n");
     }
 
-    dbg("\tst_size/chunksize = %d\n", st_size/chunksize);
-    if(rest > 0 && chunk==st_size/chunksize) {
+    dbg("\tdevsize/chunksize = %" PRIu64 "\n", devsize / chunksize);
+    if((rest > 0) && (chunk == (devsize / chunksize))) {
         dbg("\tRest used\n");
         dev[chunk] = (uint8_t *)mmap(NULL, rest, prot, MAP_SHARED, fd, (uint64_t)(chunk)*chunksize);
     } else {
@@ -455,13 +460,13 @@ void unmap_raw(uint8_t **ptr, uint32_t offset, size_t size) {
     (void)offset;
 }
 
-void map_raw(int fd, uint8_t **ptr, uint64_t offset, size_t size, size_t st_size) {
+static void map_raw(int fd, uint8_t **ptr, uint64_t offset, size_t size, uint64_t devsize) {
     if(*ptr != NULL) {
         dbg("\tArea is already mapped.\n");
         return;
     }
 
-    dbg("\tSize: 0x%x, Alloc size 0x%x\n", st_size, size);
+    dbg("\tSize: 0x%" PRIx64 ", Alloc size 0x%x\n", devsize, size);
 
     int prot = PROT_READ;
     // If is there some request for corrections, we need read/write access to medium
@@ -649,13 +654,14 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
  *
  * \param[in] *dev memory mapped device array
  * \param[in,out] *sectorsize found sectorsize candidate
+ * \param[in] devsize size of whole device in bytes
  * \param[in] force_sectorsize if -B param is used, this flag should be set
  *                                and sectorsize should be used automatically.
  * \return 0 -- UDF succesfully detected, sectorsize candidate found
  * \return -1 -- found BOOT2 or CDW02. Unsupported for now
  * \return 1 -- UDF not detected 
  */
-int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sectorsize) {
+int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize) {
     struct volStructDesc vsd;
     struct beginningExtendedAreaDesc bea;
     struct volStructDesc nsr;
@@ -665,8 +671,6 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sec
     int foundBEA = 0;
     uint32_t chunk = 0;
     uint32_t chunksize = CHUNK_SIZE;
-
-    //void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t st_size) {
 
     for(int it=0; it<5; it++, ssize *= 2) {
         if(force_sectorsize) {
@@ -679,7 +683,7 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sec
 
         for(int i = 0; i<6; i++) {
             chunk = (16 * BLOCK_SIZE + i*MIN(ssize, BLOCK_SIZE)) / chunksize; 
-            map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__);
+            map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
             dbg("try #%d at address 0x%x, chunk %d, chunk address: 0x%x\n", i, 16*BLOCK_SIZE+i*MIN(ssize, BLOCK_SIZE), chunk, (16*BLOCK_SIZE+i*MIN(ssize, BLOCK_SIZE))%chunksize);
 #ifdef MEMTRACE
             dbg("Chunk pointer: %p\n", dev[chunk]);
@@ -693,13 +697,13 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sec
                 foundBEA = 1; 
             } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_BOOT2, 5)) {
                 err("BOOT2 found, unsuported for now.\n");
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 return -1;
             } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_CD001, 5)) { 
                 //CD001 means there is ISO9660, we try search for UDF at sector 18
             } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_CDW02, 5)) {
                 err("CDW02 found, unsuported for now.\n");
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 return -1;
             } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_NSR02, 5)) {
                 memcpy(&nsr, &vsd, sizeof(nsr));
@@ -708,7 +712,7 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sec
             } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_TEA01, 5)) {
                 //We found TEA01, so we can end recognition sequence
                 memcpy(&tea, &vsd, sizeof(tea));
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 break;
             } else if(vsd.stdIdent[0] == '\0') {
                 if(foundBEA) {
@@ -733,12 +737,12 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, size_t st_size, int force_sec
         dbg("tea: type:%d, id:%s, v:%d\n", tea.structType, tea.stdIdent, tea.structVersion);
 
         *sectorsize = ssize;
-        unmap_chunk(dev, chunk, st_size);
+        unmap_chunk(dev, chunk, devsize);
         return 0;
     }
 
     err("Giving up VRS, maybe unclosed or bridged disc.\n");
-    unmap_chunk(dev, chunk, st_size);
+    unmap_chunk(dev, chunk, devsize);
     return 1;
 }
 
@@ -780,6 +784,7 @@ uint64_t count_used_bits(struct filesystemStats *stats) {
  *
  * \param[in] *dev pointer to device array
  * \param[out] *disc AVDP is stored in udf_disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in,out] *sectorsize device logical sector size
  * \param[in] devsize size of whole device in B
  * \param[in] type selector of AVDP - first or second
@@ -789,7 +794,8 @@ uint64_t count_used_bits(struct filesystemStats *stats) {
  * \return 255 Only for Third AVDP: it is not AVDP. Abort.
  * \return sum of E_CRC, E_CHECKSUM, E_WRONGDESC, E_POSITION, E_EXTLEN  
  */
-int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, size_t devsize, avdp_type_e type, int force_sectorsize, struct filesystemStats *stats) {
+int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint64_t devsize,
+             avdp_type_e type, int force_sectorsize, struct filesystemStats *stats) {
     int64_t position = 0;
     tag desc_tag;
     int ssize = 512;
@@ -821,7 +827,7 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, size
             type = 0; //Save it to FIRST_AVDP positon
         }
 
-        dbg("DevSize: %zu\n", devsize);
+        dbg("DevSize: %" PRIu64 "\n", devsize);
         dbg("Current position: %lx\n", position);
         chunk = position/chunksize;
         offset = position%chunksize;
@@ -912,6 +918,7 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, size
  *
  * \param[in] *dev pointer to device array
  * \param[out] *disc VDS is stored in udf_disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] sectorsize device logical sector size
  * \param[in] vds MAIN_VDS or RESERVE_VDS selector
  * \param[out] *seq structure capturing actual order of descriptors in VDS for recovery
@@ -919,7 +926,8 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, size
  *         -3 found unknown tag
  *         -4 descriptor is already set
  */
-int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t st_size, avdp_type_e avdp, vds_type_e vds, vds_sequence_t *seq) {
+int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
+            avdp_type_e avdp, vds_type_e vds, vds_sequence_t *seq) {
     uint8_t *position;
     int8_t counter = 0;
     tag descTag;
@@ -941,7 +949,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
     }
     chunk = location/chunksize;
     offset = (uint32_t)(location % (uint64_t)chunksize);
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
     position = dev[chunk]+offset;
     dbg("VDS Location: 0x%llx, chunk: %d, offset: 0x%lx\n", location, chunk, offset);
 
@@ -969,7 +977,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_PVD:
                 if(disc->udf_pvd[vds] != 0) {
                     err("Structure PVD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 disc->udf_pvd[vds] = malloc(sizeof(struct primaryVolDesc)); // Prepare memory
@@ -982,7 +990,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_IUVD:
                 if(disc->udf_iuvd[vds] != 0) {
                     err("Structure IUVD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 dbg("Store IUVD\n");
@@ -996,7 +1004,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_PD:
                 if(disc->udf_pd[vds] != 0) {
                     err("Structure PD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 disc->udf_pd[vds] = malloc(sizeof(struct partitionDesc)); // Prepare memory
@@ -1005,7 +1013,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_LVD:
                 if(disc->udf_lvd[vds] != 0) {
                     err("Structure LVD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 dbg("LVD size: 0x%lx\n", sizeof(struct logicalVolDesc));
@@ -1025,7 +1033,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_USD:
                 if(disc->udf_usd[vds] != 0) {
                     err("Structure USD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
 
@@ -1040,33 +1048,33 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t
             case TAG_IDENT_TD:
                 if(disc->udf_td[vds] != 0) {
                     err("Structure TD is already set. Probably error at tag or media\n");
-                    unmap_chunk(dev, chunk, st_size);
+                    unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 disc->udf_td[vds] = malloc(sizeof(struct terminatingDesc)); // Prepare memory
                 memcpy(disc->udf_td[vds], position, sizeof(struct terminatingDesc)); 
                 // Found terminator, ending.
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 return 0;
             case 0:
                 // Found end of VDS, ending.
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 return 0;
             default:
                 // Unkown TAG
                 fatal("Unknown TAG found at %p. Ending.\n", position);
-                unmap_chunk(dev, chunk, st_size);
+                unmap_chunk(dev, chunk, devsize);
                 return -3;
         }
 
         dbg("Unmap old chunk...\n");
-        unmap_chunk(dev, chunk, st_size);
+        unmap_chunk(dev, chunk, devsize);
         dbg("Unmapped\n");
         location = location + sectorsize;
         chunk = location/chunksize;
         offset = location%chunksize;
         dbg("New VDS Location: 0x%llx, chunk: %d, offset: 0x%lx\n", location, chunk, offset);
-        map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+        map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
         position = dev[chunk]+offset;
     }
     //unmap_chunk(dev, chunk);
@@ -1105,12 +1113,14 @@ int get_correct(vds_sequence_t *seq, uint16_t tagIdent) {
  * \param[in] *dev pointer to device array
  * \param[out] *disc LVID is stored in udf_disc structure
  * \param[in] sectorsize device logical sector size
+ * \param[in] devsize size of whole device in bytes
  * \param[out] *stats file system status
  * \param[in] *seq descriptor sequence
  * \return 0 everything ok
  * \return 4 structure is already set or no correct LVID found
  */
-int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t st_size, struct filesystemStats *stats, vds_sequence_t *seq ) {
+int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
+             struct filesystemStats *stats, vds_sequence_t *seq ) {
     uint32_t chunksize = CHUNK_SIZE;
     uint32_t chunk = 0;
     uint32_t offset = 0;
@@ -1131,7 +1141,7 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_
 
     chunk = (loc*sectorsize)/chunksize;
     offset = (loc*sectorsize)%chunksize;
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
     struct logicalVolIntegrityDesc *lvid;
     lvid = (struct logicalVolIntegrityDesc *)(dev[chunk]+offset);
@@ -1191,7 +1201,7 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_
         dbg("No other integrity extents are here.\n");
     }
 
-    unmap_chunk(dev, chunk, st_size); 
+    unmap_chunk(dev, chunk, devsize); 
     return 0; 
 }
 
@@ -1368,6 +1378,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  * \param[in] *dev pointer to device array
  * \param[out] *disc FSD is stored in udf_disc structure
  * \param[in] sectorsize device logical sector size
+ * \param[in] devsize size of whole device in bytes
  * \param[out] lbnlsn LBN starting offset
  * \param[in] *stats file system status
  * \param[in] *seq VDS sequence
@@ -1376,7 +1387,8 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  * \return 4 no correct PD or LVD found
  * \return 8 error during FSD identification
  */
-uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, size_t st_size, uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq) {
+uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
+                uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq) {
     long_ad *lap;
     int vds = -1;
     uint32_t offset = 0, chunk = 0;
@@ -1416,7 +1428,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, si
     position = (lsnBase+filesetblock.logicalBlockNum)*lbSize;
     chunk = position/chunksize;
     offset = position%chunksize;
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__);
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
 
     disc->udf_fsd = malloc(sizeof(struct fileSetDesc));
     memcpy(disc->udf_fsd, dev[chunk]+offset, sizeof(struct fileSetDesc));
@@ -1424,7 +1436,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, si
     if(le16_to_cpu(disc->udf_fsd->descTag.tagIdent) != TAG_IDENT_FSD) {
         err("Error identifiing FSD. Tag ID: 0x%x\n", disc->udf_fsd->descTag.tagIdent);
         free(disc->udf_fsd);
-        unmap_chunk(dev, chunk, st_size);
+        unmap_chunk(dev, chunk, devsize);
         return 8;
     }
     dbg("LogicVolIdent: %s\nFileSetIdent: %s\n", (disc->udf_fsd->logicalVolIdent), (disc->udf_fsd->fileSetIdent));
@@ -1433,7 +1445,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, si
 
     *lbnlsn = lsnBase;
 
-    unmap_chunk(dev, chunk, st_size);
+    unmap_chunk(dev, chunk, devsize);
 
     stats->dstringFSDLogVolIdentErr = check_dstring(disc->udf_fsd->logicalVolIdent, 128);
     stats->dstringFSDFileSetIdentErr = check_dstring(disc->udf_fsd->fileSetIdent, 32);
@@ -1457,6 +1469,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, si
  * This function returns pointer to array of allocation descriptors. This pointer points to memory mapped device!
  *
  * \param[in] *dev memory mapped device
+ * \param[in] devsize size of whole device in bytes
  * \param[in] lsnBase LBN offset to LSN
  * \param[in] aedlbn LBN of AED
  * \param[out] *lengthADArray size of allocation descriptor array ADArray
@@ -1469,7 +1482,9 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, si
  * \return 4 -- checksum failed
  * \return 4 -- CRC failed
  */
-uint8_t inspect_aed(int fd, uint8_t **dev, size_t st_size, uint32_t lsnBase, uint32_t aedlbn, uint32_t *lengthADArray, uint8_t **ADArray, struct filesystemStats *stats, uint8_t *status) {
+static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsnBase,
+                           uint32_t aedlbn, uint32_t *lengthADArray, uint8_t **ADArray,
+                           struct filesystemStats *stats, uint8_t *status) {
     uint16_t lbSize = stats->blocksize; 
     uint32_t lad = 0;
     uint32_t offset = 0, chunk = 0, chunksize = CHUNK_SIZE;
@@ -1477,7 +1492,7 @@ uint8_t inspect_aed(int fd, uint8_t **dev, size_t st_size, uint32_t lsnBase, uin
     chunk = ((lsnBase + aedlbn)*lbSize)/chunksize;
     offset = ((lsnBase + aedlbn)*lbSize)%chunksize;
     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
     struct allocExtDesc *aed = (struct allocExtDesc *)(dev[chunk]+offset);
     if(aed->descTag.tagIdent == TAG_IDENT_AED) {
@@ -1543,6 +1558,7 @@ uint8_t inspect_aed(int fd, uint8_t **dev, size_t st_size, uint32_t lsnBase, uin
  *
  * \param[in] *dev memory mapped device
  * \param[in] *disc udf_disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] lbnlsn LBN offset against LSN
  * \param[in] lsn actual LSN
  * \param[in] *allocDescs pointer to allocation descriptors area
@@ -1558,7 +1574,11 @@ uint8_t inspect_aed(int fd, uint8_t **dev, size_t st_size, uint32_t lsnBase, uin
  * \return 2 -- FID array allocation failed
  * \return 255 -- inspect_aed() failed
  */
-uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size, uint32_t lbnlsn, uint32_t lsn, uint8_t *allocDescs, uint32_t lengthAllocDescs, uint16_t icb_ad, struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq, uint8_t *status) {
+static uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                             uint32_t lbnlsn, uint32_t lsn, uint8_t *allocDescs,
+                             uint32_t lengthAllocDescs, uint16_t icb_ad,
+                             struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
+                             uint8_t *status) {
 
     uint32_t descSize = 0;
     uint8_t *fidArray = NULL;
@@ -1629,7 +1649,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                     aedlbn = ead->extLocation.logicalBlockNum;
                     break;
             }
-            if(inspect_aed(fd, dev, st_size, lsnBase, aedlbn, &lengthADArray, &ADArray, stats, status)) {
+            if(inspect_aed(fd, dev, devsize, lsnBase, aedlbn, &lengthADArray, &ADArray, stats, status)) {
                 err("AED inspection failed.\n");
                 return -1;
             }
@@ -1679,7 +1699,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                 chunk = ((lsnBase + sad->extPosition)*lbSize)/chunksize;
                 offset = ((lsnBase + sad->extPosition)*lbSize)%chunksize;
                 dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                 memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), sad->extLength);
                 increment_used_space(stats, 1, sad->extPosition);
@@ -1698,7 +1718,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                 chunk = ((lsnBase + lad->extLocation.logicalBlockNum)*lbSize)/chunksize;
                 offset = ((lsnBase + lad->extLocation.logicalBlockNum)*lbSize)%chunksize;
                 dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                 memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), lad->extLength);
                 increment_used_space(stats, 1, lad->extLocation.logicalBlockNum);
@@ -1717,7 +1737,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                 chunk = ((lsnBase + ead->extLocation.logicalBlockNum)*lbSize)/chunksize;
                 offset = ((lsnBase + ead->extLocation.logicalBlockNum)*lbSize)%chunksize;
                 dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                 memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), ead->extLength);
                 increment_used_space(stats, 1, ead->extLocation.logicalBlockNum);
@@ -1730,7 +1750,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
     int counter = 0;
     for(uint32_t pos=0; pos < overallLength; ) {
         dbg("FID #%d\n", counter++);
-        if(inspect_fid(fd, dev, disc, st_size, lbnlsn, lsn, fidArray, &pos, stats, depth+1, seq, &tempStatus) != 0) {
+        if(inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn, fidArray, &pos, stats, depth+1, seq, &tempStatus) != 0) {
             dbg("1 FID inspection over.\n");
             break;
         }
@@ -1755,7 +1775,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                     chunk = ((lsnBase + sad->extPosition)*lbSize)/chunksize;
                     offset = ((lsnBase + sad->extPosition)*lbSize)%chunksize;
                     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                     memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, sad->extLength);
                     prevExtLength += sad->extLength;
@@ -1773,7 +1793,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                     chunk = ((lsnBase + lad->extLocation.logicalBlockNum)*lbSize)/chunksize;
                     offset = ((lsnBase + lad->extLocation.logicalBlockNum)*lbSize)%chunksize;
                     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                     memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, lad->extLength);
                     prevExtLength += lad->extLength;
@@ -1791,7 +1811,7 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
                     chunk = ((lsnBase + ead->extLocation.logicalBlockNum)*lbSize)/chunksize;
                     offset = ((lsnBase + ead->extLocation.logicalBlockNum)*lbSize)%chunksize;
                     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                     memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, ead->extLength);
                     prevExtLength += ead->extLength;
@@ -1810,17 +1830,18 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
 /**
  * \brief FID parsing function
  *
- * This function pareses via FIDs. It continues to its FE using get_file() function. 
+ * This function parses via FIDs. It continues to its FE using get_file() function.
  * Checks and fixes *Unique ID*, *Serial Numbers* or unfinished writings.
  *
- * This fucntion is complement to get_file() and translate_fid().
+ * This function is complement to get_file() and translate_fid().
  *
  * \param[in,out] *dev memory mapped device
  * \param[in] *disc udf_disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] lbnlsn LBN offset against LSN
  * \param[in] lsn actual LSN
  * \param[in] *base base pointer for for FID area
- * \param[in,out] *pos actial position in FID area
+ * \param[in,out] *pos actual position in FID area
  * \param[in] *stats file system status
  * \param[in] depth depth of FE for printing
  * \param[in] *seq VDS sequence
@@ -1831,7 +1852,10 @@ uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t
  * \return 252 -- FID checksum failed
  * \return 251 -- FID CRC failed
  */
-uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size, uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos, struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq, uint8_t *status) {
+uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                    uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos,
+                    struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
+                    uint8_t *status) {
     uint32_t flen, padding;
     uint32_t lsnBase = lbnlsn; 
     struct fileIdentDesc *fid = (struct fileIdentDesc *)(base + *pos);
@@ -1895,7 +1919,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t s
                 chunk = position/chunksize;
                 offset = position%chunksize;
                 dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                 struct fileEntry *fe = (struct fileEntry *)(dev[chunk]+offset);
                 struct extendedFileEntry *efe = (struct extendedFileEntry *)(dev[chunk]+offset);
@@ -1911,7 +1935,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t s
                     err("(%s) FID parent FE not found.\n", info.filename);
                 }
                 imp("(%s) Tag Serial Number was fixed.\n", info.filename);
-                sync_chunk(dev, chunk, st_size);
+                sync_chunk(dev, chunk, devsize);
                 *status |= 1;
             } else {
                 *status |= 4;
@@ -1968,7 +1992,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t s
                         chunk = position/chunksize;
                         offset = position%chunksize;
                         dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                        map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                        map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                         struct fileEntry *fe = (struct fileEntry *)(dev[chunk]+offset);
                         struct extendedFileEntry *efe = (struct extendedFileEntry *)(dev[chunk]+offset);
@@ -1986,7 +2010,9 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t s
                     }
                 }
                 dbg("ICB to follow.\n");
-                int tmp_status = get_file(fd, dev, disc, st_size, lbnlsn, (fid->icb).extLocation.logicalBlockNum + lsnBase, stats, depth, uuid, info, seq);
+                int tmp_status = get_file(fd, dev, disc, devsize, lbnlsn,
+                                          (fid->icb).extLocation.logicalBlockNum + lsnBase, stats,
+                                          depth, uuid, info, seq);
                 if(tmp_status == 32) { //32 means delete this FID
                     fid->fileCharacteristics |= FID_FILE_CHAR_DELETED; //Set deleted flag
                     memset(&(fid->icb), 0, sizeof(long_ad)); //clear ICB according ECMA-167r3, 4/14.4.5
@@ -1998,7 +2024,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, size_t s
                     chunk = position/chunksize;
                     offset = position%chunksize;
                     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
                     struct fileEntry *fe = (struct fileEntry *)(dev[chunk] + offset);
                     struct extendedFileEntry *efe = (struct extendedFileEntry *)(dev[chunk]+offset);
@@ -2094,6 +2120,7 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t increment, uin
  *
  * \param[in,out] *dev memory mapped device
  * \param[in] *disc udf_disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] lbnlsn LBN offset against LSN
  * \param[in] lsn actual LSN
  * \param[in,out] *stats file system status
@@ -2108,7 +2135,9 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t increment, uin
  * \return 32 -- removed unfinished file
  * \return sum of status returned from inspect_fid(), translate_fid() or own actions (4 for unfixed error, 1 for fixed error, 0 for no error)
  */
-uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size, uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth, uint32_t uuid, struct fileInfo info, vds_sequence_t *seq ) {
+uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                 uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
+				 uint32_t uuid, struct fileInfo info, vds_sequence_t *seq ) {
     tag descTag;
     struct fileEntry *fe;
     struct extendedFileEntry *efe;
@@ -2133,7 +2162,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
     chunk = position/chunksize;
     offset = position%chunksize;
     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
     descTag = *(tag *)(dev[chunk]+offset);
     if(!checksum(descTag)) {
@@ -2164,7 +2193,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
                         }
                     }
                     if(cont == 0) {
-                        unmap_chunk(dev, chunk, st_size); 
+                        unmap_chunk(dev, chunk, devsize); 
                         return 4;
                     }
                 }
@@ -2179,7 +2208,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
                         }
                     }
                     if(cont == 0) {
-                        unmap_chunk(dev, chunk, st_size); 
+                        unmap_chunk(dev, chunk, devsize); 
                         return 4;
                     }
                 }
@@ -2241,8 +2270,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
                     blank = malloc(stats->blocksize);
                     memcpy(fe, blank, stats->blocksize);
                     free(blank);
-                    //unmap_chunk(dev, chunk, st_size); 
-                    sync_chunk(dev, chunk, st_size);
+                    //unmap_chunk(dev, chunk, devsize);
+                    sync_chunk(dev, chunk, devsize);
                     return 32; 
                 }
             }
@@ -2364,7 +2393,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
             if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, st_size, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
+                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
                 } else {
                     dbg("SHORT\n");
                     dbg("LAD: %d, N: %d, rest: %d\n", lad, lad/sizeof(short_ad), lad%sizeof(short_ad));
@@ -2386,7 +2415,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_LONG) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, st_size, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
+                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
                 } else {
                     for(int si = 0; si < (int)(lad/sizeof(long_ad)); si++) {
                         dbg("LONG\n");
@@ -2405,7 +2434,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_EXTENDED) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, st_size, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
+                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
                 } else {
                     err("EAD found. Please report.\n");
                 }
@@ -2465,7 +2494,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
 
                         fid_inspected = 1;
                         for(uint32_t pos=0; ; ) {
-                            if(inspect_fid(fd, dev, disc, st_size, lbnlsn, lsn, base, &pos, stats, depth, seq, &status) != 0) {
+                            if(inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn, base, &pos, stats, depth, seq, &status) != 0) {
                                 dbg("FID inspection over\n");
                                 break;
                             }
@@ -2496,7 +2525,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
                     lengthAllocDescs = fe->lengthAllocDescs;
                 }
                 for(uint32_t pos=0; pos < lengthAllocDescs; ) {
-                    uint8_t failureCode = inspect_fid(fd, dev, disc, st_size, lbnlsn, lsn,
+                    uint8_t failureCode = inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn,
                                                       dirContent, &pos, stats, depth+1, seq,
                                                       &status);
                     if(failureCode) {
@@ -2508,7 +2537,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
         default:
             err("IDENT: %x, LSN: %d, addr: 0x%x\n", descTag.tagIdent, lsn, lsn*lbSize);
     }            
-    // unmap_chunk(dev, chunk, st_size); 
+    // unmap_chunk(dev, chunk, devsize); 
     return status;
 }
 
@@ -2519,13 +2548,15 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_s
  *
  * \param[in,out] *dev memory mapped device
  * \param[in] *disc udf disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] lbnlsn LBN offset from LSN
  * \pararm[in,out] *stats file system status
  * \param[in] *seq VDS sequence
  *
  * \return sum of returns from stream and normal get_file()
  */
-uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, size_t st_size,  uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq ) {
+uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                           uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq ) {
     uint32_t lsn, slsn;
 
     uint32_t lsnBase = lbnlsn; 
@@ -2563,11 +2594,11 @@ uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, s
 
     if(selen > 0) {
         msg("\nStream file tree\n----------------\n");
-        status |= get_file(fd, dev, disc, st_size, lbnlsn, slsn, stats, 0, 0, info, seq);
+        status |= get_file(fd, dev, disc, devsize, lbnlsn, slsn, stats, 0, 0, info, seq);
     }
     if(elen > 0) {
         msg("\nMedium file tree\n----------------\n");
-        status |= get_file(fd, dev, disc, st_size, lbnlsn, lsn, stats, 0, 0, info, seq);
+        status |= get_file(fd, dev, disc, devsize, lbnlsn, lsn, stats, 0, 0, info, seq);
     }
     return status;
 }
@@ -2766,6 +2797,7 @@ int verify_vds(struct udf_disc *disc, vds_type_e vds, vds_sequence_t *seq, struc
  *
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] sectorsize 
  * \param[in] sourcePosition in blocks
  * \param[in] destinationPosition in blocks
@@ -2773,7 +2805,9 @@ int verify_vds(struct udf_disc *disc, vds_type_e vds, vds_sequence_t *seq, struc
  *
  * return 0
  */
-int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t sectorsize, uint32_t sourcePosition, uint32_t destinationPosition, size_t size) {
+int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
+                    size_t sectorsize, uint32_t sourcePosition, uint32_t destinationPosition,
+                    size_t size) {
     tag sourceDescTag, destinationDescTag;
     uint8_t *destArray;
     uint32_t offset = 0, chunk = 0;
@@ -2784,7 +2818,7 @@ int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size
     chunk = (sourcePosition*sectorsize)/chunksize;
     offset = (sourcePosition*sectorsize)%chunksize;
     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
 
     sourceDescTag = *(tag *)(dev[chunk]+offset);
     memcpy(&destinationDescTag, &sourceDescTag, sizeof(tag));
@@ -2797,17 +2831,17 @@ int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size
     memcpy(destArray, &destinationDescTag, sizeof(tag));
     memcpy(destArray+sizeof(tag), dev[chunk]+offset+sizeof(tag), size-sizeof(tag));
 
-    unmap_chunk(dev, chunk, st_size); 
+    unmap_chunk(dev, chunk, devsize);
     chunk = (destinationPosition*sectorsize)/chunksize;
     offset = (destinationPosition*sectorsize)%chunksize;
     dbg("Chunk: %d, offset: 0x%x\n", chunk, offset);
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
 
     memcpy(dev[chunk]+offset, destArray, size);
 
     free(destArray);
 
-    unmap_chunk(dev, chunk, st_size); 
+    unmap_chunk(dev, chunk, devsize);
 
     (void)disc;
     return 0;
@@ -2827,7 +2861,8 @@ int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size
  * \return -2 after write checksum failed 
  * \return -4 after write CRC failed
  */
-int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size_t devsize,  avdp_type_e source, avdp_type_e target) {
+int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
+               avdp_type_e source, avdp_type_e target) {
     uint64_t sourcePosition = 0;
     uint64_t targetPosition = 0;
     tag desc_tag;
@@ -2858,10 +2893,11 @@ int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, 
         type = FIRST_AVDP; //Save it to FIRST_AVDP positon
     }
 
-    dbg("DevSize: %zu\n", devsize);
+    dbg("DevSize: %" PRIu64 "\n", devsize);
     dbg("Current position: %lx\n", targetPosition);
 
-    copy_descriptor(fd, dev, disc, devsize, sectorsize, sourcePosition/sectorsize, targetPosition/sectorsize, sizeof(struct anchorVolDescPtr));
+    copy_descriptor(fd, dev, disc, devsize, sectorsize, sourcePosition/sectorsize,
+                    targetPosition/sectorsize, sizeof(struct anchorVolDescPtr));
 
     free(disc->udf_anchor[type]);
     disc->udf_anchor[type] = malloc(sizeof(struct anchorVolDescPtr)); // Prepare memory for AVDP
@@ -2909,7 +2945,8 @@ int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, 
  * \return -2 checksum failed 
  * \return -4 CRC failed
  */
-int fix_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size_t devsize,  avdp_type_e target) {
+int fix_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
+             avdp_type_e target) {
     uint64_t targetPosition = 0;
     tag desc_tag;
     avdp_type_e type = target;
@@ -2928,7 +2965,7 @@ int fix_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, si
         type = FIRST_AVDP; //Save it to FIRST_AVDP positon
     }
 
-    dbg("DevSize: %zu\n", devsize);
+    dbg("DevSize: %" PRIu64 "\n", devsize);
     dbg("Current position: %lx\n", targetPosition);
 
     chunk = targetPosition/chunksize;
@@ -3001,13 +3038,15 @@ char * descriptor_name(uint16_t descIdent) {
  *
  * \param[in,out] *dev memory mapped medium
  * \param[in,out] *disc UDF disc structure
+ * \param[in] devsize size of whole device in bytes
  * \param[in] sectorsize 
  * \param[in] source AVDP pointing to VDS
  * \param[in,out] *seq VDS sequence
  *
  * \return sum of 0, 1 and 4 according fixing and found errors
  */
-int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t sectorsize, avdp_type_e source, vds_sequence_t *seq) { 
+int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+            avdp_type_e source, vds_sequence_t *seq) {
     uint32_t position_main, position_reserve;
     uint8_t fix=0;
     uint8_t status = 0;
@@ -3039,7 +3078,7 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t
                 warn("src pos: 0x%x\n", position_reserve + i);
                 warn("dest pos: 0x%x\n", position_main + i);
                 //                memcpy(position_main + i*sectorsize, position_reserve + i*sectorsize, sectorsize);
-                copy_descriptor(fd, dev, disc, st_size, sectorsize, position_reserve + i, position_main + i, sectorsize);
+                copy_descriptor(fd, dev, disc, devsize, sectorsize, position_reserve + i, position_main + i, sectorsize);
                 status |= 1;
             } else {
                 err("[%i] %s is broken.\n", i,descriptor_name(seq->reserve[i].tagIdent));
@@ -3056,7 +3095,7 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t
 
             if(fix) {
                 warn("[%i] Fixing Reserve %s\n", i,descriptor_name(seq->main[i].tagIdent));
-                copy_descriptor(fd, dev, disc, st_size, sectorsize, position_reserve + i, position_main + i, sectorsize);
+                copy_descriptor(fd, dev, disc, devsize, sectorsize, position_reserve + i, position_main + i, sectorsize);
                 status |= 1;
             } else {
                 err("[%i] %s is broken.\n", i,descriptor_name(seq->main[i].tagIdent));
@@ -3089,6 +3128,7 @@ static const unsigned char BitsSetTable256[256] =
  *
  * \param[in,out] *dev memory mapped medium
  * \param[in] *disc UDF disc
+ * \param[in] devsize size of whole device in bytes
  * \param[in] sectorsize
  * \param[in,out] *stats file system status
  * \param[in] *seq VDS sequence
@@ -3098,7 +3138,8 @@ static const unsigned char BitsSetTable256[256] =
  * \return 4 -- No correct PD found
  * \return -1 -- no SBD found even if declared
  */
-int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t sectorsize, struct filesystemStats *stats, vds_sequence_t *seq) {
+int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+           struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t chunksize = CHUNK_SIZE;
     uint32_t chunk = 0;
@@ -3132,7 +3173,7 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t 
 
         chunk = ((lsnBase + phd->unallocSpaceBitmap.extPosition)*sectorsize)/chunksize;
         offset = ((lsnBase + phd->unallocSpaceBitmap.extPosition)*sectorsize)%chunksize;
-        map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+        map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
         struct spaceBitmapDesc *sbd = (struct spaceBitmapDesc *)(dev[chunk]+offset);
         if(sbd->descTag.tagIdent != TAG_IDENT_SBD) {
@@ -3170,6 +3211,7 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t 
  * \param[in] *dev memory mapped device
  * \param[in] *disc UDF disc
  * \param[in] sectorsize 
+ * \param[in] devsize size of whole device in bytes
  * \param[out] *stats filesystem status
  * \param[in] *seq VDS sequence
  *
@@ -3178,7 +3220,8 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t 
  * \return -1 -- SBD not found even if declared
  * \return -128 -- UST, FST or FSB found
  */
-int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size_t st_size, struct filesystemStats *stats, vds_sequence_t *seq) { 
+int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
+           struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t offset = 0, chunk = 0;
     uint32_t chunksize = CHUNK_SIZE;
@@ -3215,7 +3258,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size
         position = (lsnBase + phd->unallocSpaceBitmap.extPosition)*sectorsize;
         chunk = position/chunksize;
         offset = position%chunksize;
-        map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__);
+        map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
 
         struct spaceBitmapDesc *sbd = (struct spaceBitmapDesc *)(dev[chunk]+offset);
         if(sbd->descTag.tagIdent != TAG_IDENT_SBD) {
@@ -3249,7 +3292,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size
 
         uint8_t *ptr = NULL;
         dbg("Chunk: %d\n", chunk);
-        map_raw(fd, &ptr, (uint64_t)(chunk)*CHUNK_SIZE, (sbd->numOfBytes + offset), st_size);
+        map_raw(fd, &ptr, (uint64_t)(chunk)*CHUNK_SIZE, (sbd->numOfBytes + offset), devsize);
 #ifdef MEMTRACE
         dbg("Ptr: %p\n", ptr); 
 #endif
@@ -3292,7 +3335,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size
 
         sbd = (struct spaceBitmapDesc *)(dev[chunk]+offset);
         unmap_raw(&ptr, (uint64_t)(chunk)*CHUNK_SIZE, sbd->numOfBytes);
-        unmap_chunk(dev, chunk, st_size);
+        unmap_chunk(dev, chunk, devsize);
     }
 
     //Mark used space
@@ -3313,6 +3356,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size
  *
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc
+ * \param[in] devsize size of whole device in bytes
  * \param[in] sectorsize
  * \param[in] *stats filesystem status
  * \param[in] *seq VDS sequence
@@ -3320,7 +3364,8 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, size
  * \return 0 -- All Ok
  * \return 4 -- No correct LVD found
  */
-int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_t sectorsize, struct filesystemStats *stats, vds_sequence_t *seq) {
+int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+             struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t chunksize = CHUNK_SIZE;
     uint32_t chunk = 0;
@@ -3338,13 +3383,13 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_
 
     chunk = (loc*sectorsize)/chunksize;
     offset = (loc*sectorsize)%chunksize;
-    map_chunk(fd, dev, chunk, st_size, __FILE__, __LINE__); 
+    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
     struct logicalVolIntegrityDesc *lvid = (struct logicalVolIntegrityDesc *)(dev[chunk]+offset);
     struct impUseLVID *impUse = (struct impUseLVID *)((uint8_t *)(disc->udf_lvid) + sizeof(struct logicalVolIntegrityDesc) + 8*disc->udf_lvid->numOfPartitions); //this is because of ECMA 167r3, 3/24, fig 22
 
     // Fix PD too
-    fix_pd(fd, dev, disc, st_size, sectorsize, stats, seq);
+    fix_pd(fd, dev, disc, devsize, sectorsize, stats, seq);
 
     // Fix files/dir amounts
     impUse->numOfFiles = stats->countNumOfFiles;
@@ -3397,7 +3442,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, size_t st_size, size_
     //Write changes back to medium
     memcpy(lvid, disc->udf_lvid, size);
 
-    unmap_chunk(dev, chunk, st_size); 
+    unmap_chunk(dev, chunk, devsize); 
     imp("LVID recovery was successful.\n");
     return 0;
 }

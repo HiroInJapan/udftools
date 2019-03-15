@@ -144,7 +144,7 @@ int main(int argc, char *argv[]) {
     memset(&disc, 0, sizeof(struct udf_disc));
     struct stat stat;
     uint8_t **dev;
-    off_t st_size;
+    uint64_t devsize;
     vds_sequence_t *seq; 
     struct filesystemStats stats;
     memset(&stats, 0, sizeof(struct filesystemStats));
@@ -284,15 +284,16 @@ int main(int argc, char *argv[]) {
             exit(16);
         }
     } 
-    st_size = ftello(fp);
-    dbg("Size: 0x%lx\n", (long)st_size);
+    devsize = ftello(fp);
+    dbg("Size: 0x%" PRIx64 "\n", devsize);
 
     uint32_t chunksize = CHUNK_SIZE;
-    uint64_t rest = st_size%chunksize;
-    dbg("Chunk size %ld, rest: %ld\n", chunksize, rest);
-    dev = calloc(sizeof(uint8_t *), st_size/chunksize + (rest > 0 ? 1 : 0));
-    dbg("Amount of chunks: %d\n", st_size/chunksize + (rest > 0 ? 1 : 0));
-    for(uint64_t i=0; i<(uint64_t)(st_size/chunksize +(rest > 0 ? 1 : 0)) ; i++) {
+    uint32_t rest       = (uint32_t) devsize % chunksize;
+    uint32_t num_chunks = (uint32_t) ((devsize / chunksize) + (rest > 0 ? 1 : 0));
+    dbg("Chunk size %u, rest: %u\n", chunksize, rest);
+    dev = calloc(sizeof(uint8_t *), num_chunks);
+    dbg("Amount of chunks: %u\n", num_chunks);
+    for(uint32_t i=0; i<num_chunks; i++) {
         dev[i] = NULL;
     }
 
@@ -301,32 +302,32 @@ int main(int argc, char *argv[]) {
     seq = calloc(1, sizeof(vds_sequence_t));
 
     stats.AVDPSerialNum = 0xFFFF;
-    status = is_udf(fd, dev, &blocksize, st_size, force_sectorsize); //this function is checking for UDF recognition sequence. It also tries to detect blocksize
+    status = is_udf(fd, dev, &blocksize, devsize, force_sectorsize); //this function is checking for UDF recognition sequence. It also tries to detect blocksize
     if(status < 0) {
         exit(status);
     } else if(status == 1) { //Unclosed or bridged medium 
-        status = get_avdp(fd, dev, &disc, &blocksize, st_size, -1, force_sectorsize, &stats); //load AVDP and verify blocksize
+        status = get_avdp(fd, dev, &disc, &blocksize, devsize, -1, force_sectorsize, &stats); //load AVDP and verify blocksize
         source = FIRST_AVDP; // Unclosed medium have only one AVDP and that is saved at first position.
         if(status) {
             err("AVDP is broken. Aborting.\n");
             exit(4);
         }
     } else { //Normal medium
-        seq->anchor[0].error = get_avdp(fd, dev, &disc, &blocksize, st_size, FIRST_AVDP, force_sectorsize, &stats); //try load FIRST AVDP
+        seq->anchor[0].error = get_avdp(fd, dev, &disc, &blocksize, devsize, FIRST_AVDP, force_sectorsize, &stats); //try load FIRST AVDP
         if(seq->anchor[0].error) {
             err("AVDP[0] is broken.\n");
         } else {
             force_sectorsize = 1;
         }
 
-        seq->anchor[1].error = get_avdp(fd, dev, &disc, &blocksize, st_size, SECOND_AVDP, force_sectorsize, &stats); //load AVDP
+        seq->anchor[1].error = get_avdp(fd, dev, &disc, &blocksize, devsize, SECOND_AVDP, force_sectorsize, &stats); //load AVDP
         if(seq->anchor[1].error) {
             err("AVDP[1] is broken.\n");
         } else {
             force_sectorsize = 1;
         }
 
-        seq->anchor[2].error = get_avdp(fd, dev, &disc, &blocksize, st_size, THIRD_AVDP, force_sectorsize, &stats); //load AVDP
+        seq->anchor[2].error = get_avdp(fd, dev, &disc, &blocksize, devsize, THIRD_AVDP, force_sectorsize, &stats); //load AVDP
         if(seq->anchor[2].error) {
             dbg("AVDP[2] somehow errored, not necessarily bad thing.\n");
             if(seq->anchor[2].error < 255) { //Third AVDP is not necessarily present.
@@ -368,9 +369,9 @@ int main(int argc, char *argv[]) {
     }
 
     note("\nTrying to load first VDS\n");
-    status |= get_vds(fd, dev, &disc, blocksize, st_size, source, MAIN_VDS, seq); //load main VDS
+    status |= get_vds(fd, dev, &disc, blocksize, devsize, source, MAIN_VDS, seq); //load main VDS
     note("\nTrying to load second VDS\n");
-    status |= get_vds(fd, dev, &disc, blocksize, st_size, source, RESERVE_VDS, seq); //load reserve VDS
+    status |= get_vds(fd, dev, &disc, blocksize, devsize, source, RESERVE_VDS, seq); //load reserve VDS
 
     dbg("First VDS verification\n");
     verify_vds(&disc, MAIN_VDS, seq, &stats);
@@ -383,7 +384,7 @@ int main(int argc, char *argv[]) {
         exit(status | blocksize_status);
 
 
-    status |= get_lvid(fd, dev, &disc, blocksize, st_size, &stats, seq); //load LVID
+    status |= get_lvid(fd, dev, &disc, blocksize, devsize, &stats, seq); //load LVID
     if(stats.minUDFReadRev > MAX_VERSION){
         err("Medium UDF revision is %04x and we are able to check up to %04x\n", stats.minUDFReadRev, MAX_VERSION);
         exit(8);
@@ -395,14 +396,14 @@ int main(int argc, char *argv[]) {
 
     stats.blocksize = blocksize;
 
-    if(get_pd(fd, dev, &disc, blocksize, st_size, &stats, seq)) {
+    if(get_pd(fd, dev, &disc, blocksize, devsize, &stats, seq)) {
         err("PD error\n");
         exit(8);
     }
 
     uint32_t lbnlsn = 0;
     dbg("STATUS: 0x%02x\n", status);
-    status |= get_fsd(fd, dev, &disc, blocksize, st_size, &lbnlsn, &stats, seq);
+    status |= get_fsd(fd, dev, &disc, blocksize, devsize, &lbnlsn, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
     if(status >= 8) {
         err("Unable to continue without FSD. Consider submitting bug report. Exiting.\n");
@@ -414,7 +415,7 @@ int main(int argc, char *argv[]) {
 
     note("LBNLSN: %d\n", lbnlsn);
     if(any_error(seq) || disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE || fast_mode == 0) {
-        status |= get_file_structure(fd, dev, &disc, st_size, lbnlsn, &stats, seq);
+        status |= get_file_structure(fd, dev, &disc, devsize, lbnlsn, &stats, seq);
     }
 
     dbg("PD PartitionsContentsUse\n");
@@ -539,7 +540,7 @@ int main(int argc, char *argv[]) {
         if(fixavdp) {
             msg("Source: %d, Target1: %d, Target2: %d\n", source, target1, target2);
             if(target1 >= 0) {
-                if(write_avdp(fd, dev, &disc, blocksize, st_size, source, target1) != 0) {
+                if(write_avdp(fd, dev, &disc, blocksize, devsize, source, target1) != 0) {
                     fatal("AVDP recovery failed. Is medium writable?\n");
                 } else {
                     imp("AVDP recovery was successful.\n");
@@ -548,7 +549,7 @@ int main(int argc, char *argv[]) {
                 } 
             } 
             if(target2 >= 0) {
-                if(write_avdp(fd, dev, &disc, blocksize, st_size, source, target2) != 0) {
+                if(write_avdp(fd, dev, &disc, blocksize, devsize, source, target2) != 0) {
                     fatal("AVDP recovery failed. Is medium writable?\n");
                 } else {
                     imp("AVDP recovery was successful.\n");
@@ -560,13 +561,13 @@ int main(int argc, char *argv[]) {
 
         if(fixavdp) {
             if(seq->anchor[0].error & E_EXTLEN) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, st_size, FIRST_AVDP);                 
+                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, FIRST_AVDP);
             }
             if(seq->anchor[1].error & E_EXTLEN) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, st_size, SECOND_AVDP);                 
+                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, SECOND_AVDP);
             }
             if((seq->anchor[2].error & E_EXTLEN) && third_avdp_missing == 0) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, st_size, THIRD_AVDP);                 
+                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, THIRD_AVDP);
             }
         }
 
@@ -575,7 +576,7 @@ int main(int argc, char *argv[]) {
 
     print_metadata_sequence(seq);
 
-    status |= fix_vds(fd, dev, &disc, st_size, blocksize, source, seq); 
+    status |= fix_vds(fd, dev, &disc, devsize, blocksize, source, seq);
 
     int fixlvid = 0;
     int fixpd = 0;
@@ -631,12 +632,12 @@ int main(int argc, char *argv[]) {
 
 
     if(fixlvid == 1) {
-        if(fix_lvid(fd, dev, &disc, st_size, blocksize, &stats, seq) == 0) {
+        if(fix_lvid(fd, dev, &disc, devsize, blocksize, &stats, seq) == 0) {
             error_status &= ~(ES_LVID | ES_PD); 
             fix_status |= (ES_LVID | ES_PD);
         }
     } else if(fixlvid == 0 && fixpd == 1) {
-        if(fix_pd(fd, dev, &disc, st_size, blocksize, &stats, seq) == 0) {
+        if(fix_pd(fd, dev, &disc, devsize, blocksize, &stats, seq) == 0) {
             error_status &= ~(ES_PD); 
             fix_status |= ES_PD;
         }
