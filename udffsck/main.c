@@ -457,12 +457,12 @@ int main(int argc, char *argv[]) {
     msg("Free Space: %"PRIu64" (%u)\n", stats.freeSpaceBlocks * (uint64_t)(blocksize), stats.freeSpaceBlocks);
     msg("Partition size: %"PRIu64" (%u)\n", stats.partitionSizeBlocks * (uint64_t)(blocksize), stats.partitionSizeBlocks);
     uint64_t expUsedSpace = 0;
-    if(fast_mode == 0) {
+    if((fast_mode == 0) && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
         expUsedSpace = (stats.partitionSizeBlocks - stats.freeSpaceBlocks) * (uint64_t) blocksize;
         msg("Expected Used Space: %"PRIu64" (%"PRIu64")\n", expUsedSpace, expUsedSpace / blocksize);
         msg("Expected Used Blocks: %u\nExpected Unused Blocks: %u\n", stats.expUsedBlocks, stats.expUnusedBlocks);
     }
-    if(fast_mode == 0) {
+    if((fast_mode == 0)  && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
         int64_t usedSpaceDiff = expUsedSpace-stats.usedSpace;
         if(usedSpaceDiff != 0) {
             err("%" PRId64 " blocks are unused but not marked as unallocated in Free Space Table.\n", usedSpaceDiff/blocksize);

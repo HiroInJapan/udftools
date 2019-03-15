@@ -3291,6 +3291,16 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint
         err("No correct PD found. Aborting.\n");
         return 4;
     }
+
+    stats->partitionAccessType = disc->udf_pd[vds]->accessType;
+
+    // Create array for used/unused blocks counting
+    stats->partitionNumOfBits  = disc->udf_pd[vds]->partitionLength;
+    stats->partitionNumOfBytes = (stats->partitionNumOfBits + 7) / 8;
+    stats->actPartitionBitmap  = malloc(stats->partitionNumOfBytes);
+    memset(stats->actPartitionBitmap, 0xff, stats->partitionNumOfBytes);
+    dbg("Create array done\n");
+
     struct partitionHeaderDesc *phd = (struct partitionHeaderDesc *)(disc->udf_pd[vds]->partitionContentsUse);
     dbg("[USD] UST pos: %u, len: %u\n", phd->unallocSpaceTable.extPosition, phd->unallocSpaceTable.extLength);
     dbg("[USD] USB pos: %u, len: %u\n", phd->unallocSpaceBitmap.extPosition, phd->unallocSpaceBitmap.extLength);
@@ -3342,13 +3352,8 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint
         dbg("Bitmap: %u\n", (lsnBase + phd->unallocSpaceBitmap.extPosition));
 #endif
 
-        //Create array for used/unused blocks counting
-        stats->actPartitionBitmap = calloc(sbd->numOfBytes, 1);
-        memset(stats->actPartitionBitmap, 0xff, sbd->numOfBytes);
         stats->partitionNumOfBytes = sbd->numOfBytes;
         stats->partitionNumOfBits = sbd->numOfBits;
-
-        dbg("Crete array done\n");
 
         uint8_t *ptr = NULL;
         dbg("Chunk: %u\n", chunk);

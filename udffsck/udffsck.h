@@ -84,6 +84,7 @@ struct filesystemStats {
     uint32_t partitionSizeBlocks;
     uint32_t expUsedBlocks;
     uint32_t expUnusedBlocks;
+    uint32_t partitionAccessType;
     uint32_t partitionNumOfBytes;
     uint32_t partitionNumOfBits;
     uint8_t * actPartitionBitmap;
