@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017  Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (C) 2017-2018  Pali Rohár <pali.rohar@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,12 +35,12 @@
 #include "libudffs.h"
 #include "readdisc.h"
 
-static int read_offset(int fd, struct udf_disc *disc, void *buf, size_t offset, size_t count, int warn_beyond)
+static int read_offset(int fd, struct udf_disc *disc, void *buf, off_t offset, size_t count, int warn_beyond)
 {
 	off_t off;
 	ssize_t ret;
 
-	if (offset + count > (size_t)disc->blocks * disc->blocksize)
+	if (offset + (off_t)count > (off_t)disc->blocks * disc->blocksize)
 	{
 		if (warn_beyond)
 			fprintf(stderr, "%s: Warning: Trying to read beyond end of disk\n", appname);
@@ -47,7 +48,7 @@ static int read_offset(int fd, struct udf_disc *disc, void *buf, size_t offset, 
 	}
 
 	off = lseek(fd, offset, SEEK_SET);
-	if (off != (off_t)-1 && (size_t)off != offset)
+	if (off != (off_t)-1 && off != offset)
 	{
 		errno = EIO;
 		off = (off_t)-1;
@@ -201,7 +202,7 @@ static int read_anchor_i(int fd, struct udf_disc *disc, int i, uint32_t location
 	struct anchorVolDescPtr avdp;
 	struct udf_extent *ext;
 
-	if (read_offset(fd, disc, &avdp, (size_t)location * disc->blocksize, sizeof(avdp), 1) < 0)
+	if (read_offset(fd, disc, &avdp, (off_t)location * disc->blocksize, sizeof(avdp), 1) < 0)
 		return -2;
 
 	if (le32_to_cpu(avdp.descTag.tagLocation) != location)
@@ -233,14 +234,14 @@ static int read_anchor_second(int fd, struct udf_disc *disc)
 {
 	int ret1, ret2;
 
-	if (disc->blocks > 257 && (size_t)(disc->blocks - 257) * disc->blocksize > (size_t)32768 + disc->blocksize && disc->blocks - 257 != 256)
+	if (disc->blocks > 257 && (off_t)(disc->blocks - 257) * disc->blocksize > (off_t)32768 + disc->blocksize && disc->blocks - 257 != 256)
 		ret1 = read_anchor_i(fd, disc, 1, disc->blocks - 257);
 	else
 		ret1 = -2;
 	if (ret1 == -1)
 		return -1;
 
-	if ((size_t)(disc->blocks - 1) * disc->blocksize > (size_t)32768 + disc->blocksize && disc->blocks - 1 != 256)
+	if ((off_t)(disc->blocks - 1) * disc->blocksize > (off_t)32768 + disc->blocksize && disc->blocks - 1 != 256)
 		ret2 = read_anchor_i(fd, disc, 2, disc->blocks - 1);
 	else
 		ret2 = -2;
@@ -331,7 +332,7 @@ static int detect_udf(int fd, struct udf_disc *disc)
 	if (disc->blocksize)
 	{
 		if (disc->blksize / disc->blocksize > UINT32_MAX)
-			fprintf(stderr, "%s: Warning: Disk is too big (%llu), using only %lu blocks\n", appname, (unsigned long long int)(disc->blksize / disc->blocksize), (unsigned long int)UINT32_MAX);
+			fprintf(stderr, "%s: Warning: Disk is too big (%"PRIu64"), using only %"PRIu32" blocks\n", appname, disc->blksize / disc->blocksize, UINT32_MAX);
 
 		setup_blocks(disc);
 
@@ -460,10 +461,10 @@ static int detect_udf(int fd, struct udf_disc *disc)
 	}
 
 	if (disc->blksize / disc->blocksize > UINT32_MAX)
-		fprintf(stderr, "%s: Warning: Disk is too big (%llu), using only %lu blocks\n", appname, (unsigned long long int)(disc->blksize / disc->blocksize), (unsigned long int)UINT32_MAX);
+		fprintf(stderr, "%s: Warning: Disk is too big (%"PRIu64"), using only %"PRIu32" blocks\n", appname, disc->blksize / disc->blocksize, UINT32_MAX);
 
 	if (disc->blkssz && disc->blkssz != disc->blocksize)
-		fprintf(stderr, "%s: Warning: Disk logical sector size (%d) does not match UDF block size (%u)\n", appname, disc->blkssz, (unsigned int)disc->blocksize);
+		fprintf(stderr, "%s: Warning: Disk logical sector size (%u) does not match UDF block size (%"PRIu32")\n", appname, disc->blkssz, disc->blocksize);
 
 	if (disc->blocksize <= 2048)
 	{
@@ -505,10 +506,11 @@ static int choose_anchor(struct udf_disc *disc)
 static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 {
 	uint32_t location, length, count, i;
-	uint32_t next_vdp_num, next_location, next_length, next_count;
+	uint32_t next_location, next_length, next_count;
 	uint16_t type, udf_rev_le16;
 	size_t gd_length;
 	struct genericDesc *gd_ptr;
+	struct partitionDesc *pd_ptr;
 	struct udf_extent *ext;
 	struct volDescPtr *vdp;
 	struct logicalVolDesc *lvd;
@@ -516,6 +518,7 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 	unsigned char buffer[512];
 	int id, anchor;
 	int nested;
+	int done;
 
 	anchor = choose_anchor(disc);
 	if (anchor == -1)
@@ -532,6 +535,18 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 		next_location = le32_to_cpu(disc->udf_anchor[anchor]->reserveVolDescSeqExt.extLocation);
 		next_length = le32_to_cpu(disc->udf_anchor[anchor]->reserveVolDescSeqExt.extLength) & EXT_LENGTH_MASK;
 		id = 1;
+		if (next_location == le32_to_cpu(disc->udf_anchor[anchor]->mainVolDescSeqExt.extLocation))
+		{
+			fprintf(stderr, "%s: Warning: Reserve Volume Descriptor Sequence is on same location as Main\n", appname);
+			disc->udf_pvd[1] = disc->udf_pvd[0];
+			disc->udf_lvd[1] = disc->udf_lvd[0];
+			disc->udf_pd[1] = disc->udf_pd[0];
+			disc->udf_pd2[1] = disc->udf_pd2[0];
+			disc->udf_usd[1] = disc->udf_usd[0];
+			disc->udf_iuvd[1] = disc->udf_iuvd[0];
+			disc->udf_td[1] = disc->udf_td[0];
+			return 0;
+		}
 	}
 	else
 	{
@@ -545,7 +560,6 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 		return -2;
 
 	nested = 0;
-	next_vdp_num = 0;
 
 	while (next_location && next_count)
 	{
@@ -567,15 +581,17 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 		if (count > 256)
 			length = 256 * disc->blocksize;
 
+		done = 0;
+
 		for (i = 0; i < count; ++i)
 		{
 			if (count >= 256)
 			{
-				fprintf(stderr, "%s: Warning: Too many descriptors (%lu) in Volume Descriptor Sequence, stopping scanning\n", appname, (long unsigned int)count);
+				fprintf(stderr, "%s: Warning: Too many descriptors (%"PRIu32") in Volume Descriptor Sequence, stopping scanning\n", appname, count);
 				break;
 			}
 
-			if (read_offset(fd, disc, &buffer, ((size_t)location+i) * disc->blocksize, sizeof(buffer), 1) < 0)
+			if (read_offset(fd, disc, &buffer, ((off_t)location+i) * disc->blocksize, sizeof(buffer), 1) < 0)
 				return -3;
 
 			gd_ptr = (struct genericDesc *)&buffer;
@@ -606,19 +622,44 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 					memcpy(gd_ptr, &buffer, sizeof(buffer));
 					set_desc(ext, type, i, sizeof(buffer), alloc_data(gd_ptr, sizeof(buffer)));
 
-					if (type == TAG_IDENT_PVD && (!disc->udf_pvd[id] || le32_to_cpu(disc->udf_pvd[id]->volDescSeqNum) < le32_to_cpu(gd_ptr->volDescSeqNum)))
-						disc->udf_pvd[id] = (struct primaryVolDesc *)gd_ptr;
-					else if (type == TAG_IDENT_PD && (!disc->udf_pd[id] || le32_to_cpu(disc->udf_pd[id]->volDescSeqNum) < le32_to_cpu(gd_ptr->volDescSeqNum)))
-						disc->udf_pd[id] = (struct partitionDesc *)gd_ptr;
-					else if (type == TAG_IDENT_IUVD && (!disc->udf_iuvd[id] || le32_to_cpu(disc->udf_iuvd[id]->volDescSeqNum) < le32_to_cpu(gd_ptr->volDescSeqNum)))
-						disc->udf_iuvd[id] = (struct impUseVolDesc *)gd_ptr;
-					else if (type == TAG_IDENT_TD && !disc->udf_td[id])
-						disc->udf_td[id] = (struct terminatingDesc *)gd_ptr;
-					else if (type == TAG_IDENT_VDP)
+					switch (type)
 					{
-						vdp = (struct volDescPtr *)gd_ptr;
-						if (next_vdp_num < le32_to_cpu(vdp->volDescSeqNum))
-						{
+						case TAG_IDENT_PVD:
+							if (!disc->udf_pvd[id] || le32_to_cpu(disc->udf_pvd[id]->volDescSeqNum) < le32_to_cpu(gd_ptr->volDescSeqNum))
+								disc->udf_pvd[id] = (struct primaryVolDesc *)gd_ptr;
+							break;
+
+						case TAG_IDENT_PD:
+							pd_ptr = (struct partitionDesc *)gd_ptr;
+							if (!disc->udf_pd[id] || le16_to_cpu(disc->udf_pd[id]->partitionNumber) == le16_to_cpu(pd_ptr->partitionNumber))
+							{
+								if (!disc->udf_pd[id] || le32_to_cpu(disc->udf_pd[id]->volDescSeqNum) < le32_to_cpu(pd_ptr->volDescSeqNum))
+									disc->udf_pd[id] = pd_ptr;
+							}
+							else if (!disc->udf_pd2[id] || le16_to_cpu(disc->udf_pd2[id]->partitionNumber) == le16_to_cpu(pd_ptr->partitionNumber))
+							{
+								if (!disc->udf_pd2[id] || le32_to_cpu(disc->udf_pd2[id]->volDescSeqNum) < le32_to_cpu(pd_ptr->volDescSeqNum))
+									disc->udf_pd2[id] = pd_ptr;
+							}
+							else
+							{
+								fprintf(stderr, "%s: Warning: More then two Partition Descriptors are present, ignoring others\n", appname);
+							}
+							break;
+
+						case TAG_IDENT_IUVD:
+							if (!disc->udf_iuvd[id] || le32_to_cpu(disc->udf_iuvd[id]->volDescSeqNum) < le32_to_cpu(gd_ptr->volDescSeqNum))
+								disc->udf_iuvd[id] = (struct impUseVolDesc *)gd_ptr;
+							break;
+
+						case TAG_IDENT_TD:
+							if (!disc->udf_td[id])
+								disc->udf_td[id] = (struct terminatingDesc *)gd_ptr;
+							done = 1;
+							break;
+
+						case TAG_IDENT_VDP:
+							vdp = (struct volDescPtr *)gd_ptr;
 							next_location = le32_to_cpu(vdp->nextVolDescSeqExt.extLocation);
 							if (next_location <= location)
 							{
@@ -627,23 +668,32 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 							}
 							else
 							{
-								next_vdp_num = le32_to_cpu(vdp->volDescSeqNum);
 								next_length = le32_to_cpu(vdp->nextVolDescSeqExt.extLength) & EXT_LENGTH_MASK;
 								next_count = next_length / disc->blocksize;
 							}
-						}
+							done = 1;
+							break;
+
+						default:
+							fprintf(stderr, "%s: Warning: Unknown descriptor in Volume Descriptor Sequence\n", appname);
+							break;
 					}
-					else
-						fprintf(stderr, "%s: Warning: Unknown descriptor in Volume Descriptor Sequence\n", appname);
 					break;
 
 				case TAG_IDENT_LVD:
 					lvd = (struct logicalVolDesc *)gd_ptr;
 
-					gd_length = sizeof(*lvd) + le32_to_cpu(lvd->mapTableLength);
-					if (i*disc->blocksize + gd_length > length || gd_length > 256*disc->blocksize)
+					if (sizeof(*lvd) + (uint64_t)le32_to_cpu(lvd->mapTableLength) > 256*disc->blocksize)
 					{
-						fprintf(stderr, "%s: Warning: Logical Volume Descriptor is too big (%llu)\n", appname, (unsigned long long int)(i*disc->blocksize + gd_length));
+						fprintf(stderr, "%s: Warning: Logical Volume Descriptor is too big (%"PRIu64")\n", appname, (uint64_t)(sizeof(*lvd) + (uint64_t)le32_to_cpu(lvd->mapTableLength)));
+						i = count-1;
+						break;
+					}
+
+					gd_length = sizeof(*lvd) + le32_to_cpu(lvd->mapTableLength);
+					if (i*disc->blocksize + gd_length > length)
+					{
+						fprintf(stderr, "%s: Warning: Logical Volume Descriptor is beyond end of Volume Descriptor Sequence\n", appname);
 						i = count-1;
 						break;
 					}
@@ -661,7 +711,7 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 					{
 						memcpy(lvd, &buffer, sizeof(buffer));
 						errno = 0;
-						if (read(fd, (void *)lvd + sizeof(buffer), gd_length - sizeof(buffer)) != (ssize_t)(gd_length - sizeof(buffer)))
+						if (read(fd, (uint8_t *)lvd + sizeof(buffer), gd_length - sizeof(buffer)) != (ssize_t)(gd_length - sizeof(buffer)))
 						{
 							fprintf(stderr, "%s: Warning: read failed: %s\n", appname, strerror(errno ? errno : EIO));
 							free(lvd);
@@ -693,10 +743,17 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 				case TAG_IDENT_USD:
 					usd = (struct unallocSpaceDesc *)&buffer;
 
-					gd_length = sizeof(*usd) + le32_to_cpu(usd->numAllocDescs) * sizeof(*usd->allocDescs);
-					if (i*disc->blocksize + gd_length > length || gd_length > 256*disc->blocksize)
+					if (sizeof(*usd) + (uint64_t)le32_to_cpu(usd->numAllocDescs) * sizeof(*usd->allocDescs) > 256*disc->blocksize)
 					{
-						fprintf(stderr, "%s: Warning: Unallocated Space Descriptor is too big (%llu)\n", appname, (unsigned long long int)(i*disc->blocksize + gd_length));
+						fprintf(stderr, "%s: Warning: Unallocated Space Descriptor is too big (%"PRIu64")\n", appname, (uint64_t)(sizeof(*usd) + (uint64_t)le32_to_cpu(usd->numAllocDescs) * sizeof(*usd->allocDescs)));
+						i = count-1;
+						break;
+					}
+
+					gd_length = sizeof(*usd) + le32_to_cpu(usd->numAllocDescs) * sizeof(*usd->allocDescs);
+					if (i*disc->blocksize + gd_length > length)
+					{
+						fprintf(stderr, "%s: Warning: Unallocated Space Descriptor is beyond end of Volume Descriptor Sequence\n", appname);
 						i = count-1;
 						break;
 					}
@@ -714,7 +771,7 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 					{
 						memcpy(usd, &buffer, sizeof(buffer));
 						errno = 0;
-						if (read(fd, (void *)usd + sizeof(buffer), gd_length - sizeof(buffer)) != (ssize_t)(gd_length - sizeof(buffer)))
+						if (read(fd, (uint8_t *)usd + sizeof(buffer), gd_length - sizeof(buffer)) != (ssize_t)(gd_length - sizeof(buffer)))
 						{
 							fprintf(stderr, "%s: Warning: read failed: %s\n", appname, strerror(errno ? errno : EIO));
 							free(usd);
@@ -733,7 +790,7 @@ static int scan_vds(int fd, struct udf_disc *disc, enum udf_space_type vds_type)
 					break;
 			}
 
-			if (type == TAG_IDENT_TD)
+			if (done)
 				break;
 		}
 	}
@@ -792,11 +849,11 @@ static void scan_lvis(int fd, struct udf_disc *disc)
 	{
 		if (length > 256*disc->blocksize)
 		{
-			fprintf(stderr, "%s: Warning: Logical Volume Integrity Descriptor Sequence is too big (%lu)\n", appname, (unsigned long int)length);
+			fprintf(stderr, "%s: Warning: Logical Volume Integrity Descriptor Sequence is too big (%"PRIu32")\n", appname, length);
 			break;
 		}
 
-		if (read_offset(fd, disc, &buffer, (size_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
+		if (read_offset(fd, disc, &buffer, (off_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
 			return;
 
 		descTag = (tag *)&buffer;
@@ -822,12 +879,12 @@ static void scan_lvis(int fd, struct udf_disc *disc)
 		lvid = (struct logicalVolIntegrityDesc *)buffer;
 		if (le32_to_cpu(lvid->numOfPartitions) > 32)
 		{
-			fprintf(stderr, "%s: Warning: Too many partitions (%lu) in Logical Volume Integrity Descriptor, stopping scanning\n", appname, (unsigned long int)le32_to_cpu(lvid->numOfPartitions));
+			fprintf(stderr, "%s: Warning: Too many partitions (%"PRIu32") in Logical Volume Integrity Descriptor, stopping scanning\n", appname, le32_to_cpu(lvid->numOfPartitions));
 			break;
 		}
 		if (le32_to_cpu(lvid->lengthOfImpUse) > 32*disc->blocksize)
 		{
-			fprintf(stderr, "%s: Warning: Logical Volume Integrity Descriptor Implementation Use is too big (%lu), stopping scanning\n", appname, (unsigned long int)le32_to_cpu(lvid->lengthOfImpUse));
+			fprintf(stderr, "%s: Warning: Logical Volume Integrity Descriptor Implementation Use is too big (%"PRIu32"), stopping scanning\n", appname, le32_to_cpu(lvid->lengthOfImpUse));
 			break;
 		}
 
@@ -851,7 +908,7 @@ static void scan_lvis(int fd, struct udf_disc *disc)
 		{
 			memcpy(lvid, &buffer, sizeof(buffer));
 			errno = 0;
-			if (read(fd, (void *)lvid + sizeof(buffer), lvid_length - sizeof(buffer)) != (ssize_t)(lvid_length - sizeof(buffer)))
+			if (read(fd, (uint8_t *)lvid + sizeof(buffer), lvid_length - sizeof(buffer)) != (ssize_t)(lvid_length - sizeof(buffer)))
 			{
 				fprintf(stderr, "%s: Warning: read failed: %s\n", appname, strerror(errno ? errno : EIO));
 				free(lvid);
@@ -906,11 +963,16 @@ static void parse_lvidiu(struct udf_disc *disc)
 		return;
 	}
 
-	lvidiu = (struct logicalVolIntegrityDescImpUse *)&(disc->udf_lvid->impUse[le32_to_cpu(disc->udf_lvid->numOfPartitions) * 2 * sizeof(uint32_t)]);
-	disc->udf_rev = le16_to_cpu(lvidiu->minUDFReadRev);
-	disc->udf_write_rev = le16_to_cpu(lvidiu->minUDFWriteRev);
+	lvidiu = (struct logicalVolIntegrityDescImpUse *)&(disc->udf_lvid->data[le32_to_cpu(disc->udf_lvid->numOfPartitions) * 2 * sizeof(uint32_t)]);
 	disc->num_files = le32_to_cpu(lvidiu->numFiles);
 	disc->num_dirs = le32_to_cpu(lvidiu->numDirs);
+
+	/* Fields minUDFReadRev and minUDFWriteRev are defined since UDF 1.02 */
+	if (disc->udf_rev >= 0x0102)
+	{
+		disc->udf_rev = le16_to_cpu(lvidiu->minUDFReadRev);
+		disc->udf_write_rev = le16_to_cpu(lvidiu->minUDFWriteRev);
+	}
 }
 
 static struct genericPartitionMap *find_partition(struct udf_disc *disc, uint8_t type, const char *ident)
@@ -971,25 +1033,61 @@ static struct genericPartitionMap *get_partition(struct udf_disc *disc, int id, 
 	return pmap;
 }
 
-static uint32_t find_block_position(struct udf_disc *disc, struct genericPartitionMap *pmap, uint32_t block)
+static struct partitionDesc *find_partition_descriptor(struct udf_disc *disc, uint16_t partition)
 {
+	int id;
+
+	if (disc->udf_pd[0])
+		id = 0;
+	else if (disc->udf_pd[1])
+		id = 1;
+	else
+		return NULL;
+
+	if (le16_to_cpu(disc->udf_pd[id]->partitionNumber) == partition)
+		return disc->udf_pd[id];
+
+	if (disc->udf_pd2[0])
+		id = 0;
+	else if (disc->udf_pd2[1])
+		id = 1;
+	else
+		return NULL;
+
+	if (le16_to_cpu(disc->udf_pd2[id]->partitionNumber) == partition)
+		return disc->udf_pd2[id];
+
+	return NULL;
+}
+
+static uint32_t find_block_position(struct udf_disc *disc, struct genericPartitionMap *pmap, uint32_t block, uint16_t *partition)
+{
+	struct genericPartitionMap1 *pm1;
 	struct udfPartitionMap2 *upm2;
+	struct virtualPartitionMap *vpm;
 	struct sparablePartitionMap *spm;
 	uint8_t count, i;
 	uint16_t packet_len, num, j;
 	uint32_t location, packet, offset;
 
 	if (pmap->partitionMapType == GP_PARTITION_MAP_TYPE_1)
+	{
+		pm1 = (struct genericPartitionMap1 *)pmap;
+		*partition = le16_to_cpu(pm1->partitionNum);
 		return block;
+	}
 	else if (pmap->partitionMapType == GP_PARTITION_MAP_TYPE_2)
 	{
 		upm2 = (struct udfPartitionMap2 *)pmap;
 		if (strncmp((char *)upm2->partIdent.ident, UDF_ID_VIRTUAL, sizeof(upm2->partIdent.ident)) == 0)
 		{
+			vpm = (struct virtualPartitionMap *)upm2;
+			*partition = le16_to_cpu(vpm->partitionNum);
+
 			if (!disc->vat)
 				return UINT32_MAX;
 			else if (block < disc->vat_entries)
-				return disc->vat[block];
+				return le32_to_cpu(disc->vat[block]);
 			else
 				return block;
 		}
@@ -998,9 +1096,10 @@ static uint32_t find_block_position(struct udf_disc *disc, struct genericPartiti
 			spm = (struct sparablePartitionMap *)upm2;
 			count = spm->numSparingTables;
 			packet_len = le16_to_cpu(spm->packetLength);
+			*partition = le16_to_cpu(spm->partitionNum);
 
-			packet = block & ~(packet_len-1);
-			offset = block & (packet_len-1);
+			offset = block % packet_len;
+			packet = block - offset;
 
 			for (i = 0; i < count; ++i)
 			{
@@ -1070,7 +1169,7 @@ static void read_stable(int fd, struct udf_disc *disc)
 	{
 		location = le32_to_cpu(spm->locSparingTable[i]);
 
-		if (read_offset(fd, disc, &buffer, (size_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
+		if (read_offset(fd, disc, &buffer, (off_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
 			return;
 
 		st = (struct sparingTable *)&buffer;
@@ -1088,7 +1187,7 @@ static void read_stable(int fd, struct udf_disc *disc)
 		st_len = sizeof(*st) + num * sizeof(struct sparingEntry);
 		if (st_len > length)
 		{
-			fprintf(stderr, "%s: Warning: Sparing Table is too big (%llu)\n", appname, (unsigned long long int)st_len);
+			fprintf(stderr, "%s: Warning: Sparing Table is too big (%zu)\n", appname, st_len);
 			return;
 		}
 
@@ -1105,7 +1204,7 @@ static void read_stable(int fd, struct udf_disc *disc)
 		{
 			memcpy(disc->udf_stable[i], &buffer, sizeof(buffer));
 			errno = 0;
-			if (read(fd, (void *)disc->udf_stable[i] + sizeof(buffer), st_len - sizeof(buffer)) != (ssize_t)(st_len - sizeof(buffer)))
+			if (read(fd, (uint8_t *)disc->udf_stable[i] + sizeof(buffer), st_len - sizeof(buffer)) != (ssize_t)(st_len - sizeof(buffer)))
 			{
 				fprintf(stderr, "%s: Warning: read failed: %s\n", appname, strerror(errno ? errno : EIO));
 				free(disc->udf_stable[i]);
@@ -1135,28 +1234,47 @@ static void read_stable(int fd, struct udf_disc *disc)
 static void read_vat(int fd, struct udf_disc *disc)
 {
 	long last;
+	struct partitionDesc *pd;
+	struct virtualPartitionMap *vpm;
+	long_ad *lad;
+	short_ad *sad;
+	uint32_t j, count;
+	uint32_t ext_length, ext_position, ext_location;
+	uint16_t ext_partition;
+	uint64_t vat_length, vat_offset;
 	uint32_t i, vat_block;
 	uint32_t length, offset, location;
+	uint32_t ea_length, ea_offset;
+	uint32_t ea_attr_length, ea_attr_offset;
+	uint64_t unique_id;
 	struct stat st;
 	struct fileEntry *fe;
 	struct extendedFileEntry *efe;
 	struct virtualAllocationTable15 *vat15;
 	struct virtualAllocationTable20 *vat20;
+	struct extendedAttrHeaderDesc ea_hdr;
+	struct impUseExtAttr ea_attr;
+	struct LVExtensionEA ea_lv;
 	unsigned char *vat;
+	unsigned char *descs;
 	unsigned char buffer[512];
-	int id;
 
-	if (disc->udf_pd[0])
-		id = 0;
-	else if (disc->udf_pd[1])
-		id = 1;
-	else
+	vpm = (struct virtualPartitionMap *)find_partition(disc, GP_PARTITION_MAP_TYPE_2, UDF_ID_VIRTUAL);
+	if (!vpm)
+	{
+		if (disc->vat_block)
+			fprintf(stderr, "%s: Error: Virtual Partition Map not found, but --vatblock specified\n", appname);
 		return;
+	}
 
-	location = le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation);
-
-	if (!find_partition(disc, GP_PARTITION_MAP_TYPE_2, UDF_ID_VIRTUAL))
+	pd = find_partition_descriptor(disc, le16_to_cpu(vpm->partitionNum));
+	if (!pd)
+	{
+		fprintf(stderr, "%s: Error: Virtual Partition Map found, but corresponding Partition Descriptor not found\n", appname);
 		return;
+	}
+
+	location = le32_to_cpu(pd->partitionStartingLocation);
 
 	if (disc->vat_block)
 		vat_block = disc->vat_block;
@@ -1167,7 +1285,7 @@ static void read_vat(int fd, struct udf_disc *disc)
 
 	for (i = vat_block + 3; i > 0 && i > vat_block - 32; --i)
 	{
-		if (read_offset(fd, disc, &buffer, (size_t)i * disc->blocksize, sizeof(buffer), 0) < 0)
+		if (read_offset(fd, disc, &buffer, (off_t)i * disc->blocksize, sizeof(buffer), 0) < 0)
 			continue;
 
 		fe = (struct fileEntry *)&buffer;
@@ -1180,66 +1298,207 @@ static void read_vat(int fd, struct udf_disc *disc)
 
 		if (location + le32_to_cpu(fe->descTag.tagLocation) != i)
 		{
-			fprintf(stderr, "%s: Warning: Found Virtual Allocation Table at partition offset %u (block %u), but expected at offset %u, ignoring it\n", appname, (unsigned int)(i-location), (unsigned int)i, (unsigned int)(le32_to_cpu(fe->descTag.tagLocation)));
+			fprintf(stderr, "%s: Warning: Found Virtual Allocation Table at partition offset %"PRIu32" (block %"PRIu32"), but expected at offset %"PRIu32", ignoring it\n", appname, i-location, i, le32_to_cpu(fe->descTag.tagLocation));
 			continue;
-		}
-
-		if ((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) != ICBTAG_FLAG_AD_IN_ICB)
-		{
-			fprintf(stderr, "%s: Warning: Reading Virtual Allocation Table outside of Information Control Block is not supported yet\n", appname);
-			break;
 		}
 
 		if (le16_to_cpu(fe->descTag.tagIdent) == TAG_IDENT_FE)
 		{
-			offset = sizeof(*fe) + le32_to_cpu(fe->lengthExtendedAttr);
+			ea_offset = sizeof(*fe);
+			ea_length = le32_to_cpu(fe->lengthExtendedAttr);
+			offset = ea_offset + ea_length;
 			length = le32_to_cpu(fe->lengthAllocDescs);
+			unique_id = le64_to_cpu(fe->uniqueID);
 		}
 		else if (le16_to_cpu(fe->descTag.tagIdent) == TAG_IDENT_EFE)
 		{
 			efe = (struct extendedFileEntry *)&buffer;
-			offset = sizeof(*efe) + le32_to_cpu(efe->lengthExtendedAttr);
+			ea_offset = sizeof(*efe);
+			ea_length = le32_to_cpu(efe->lengthExtendedAttr);
+			offset = ea_offset + ea_length;
 			length = le32_to_cpu(efe->lengthAllocDescs);
+			unique_id = le64_to_cpu(efe->uniqueID);
 		}
 		else
 			continue;
 
-		if (le64_to_cpu(fe->informationLength) > length)
+		if (length == 0)
 		{
-			fprintf(stderr, "%s: Warning: Virtual Allocation Table inside of Information Control Block is larger then allocated block\n", appname);
+			fprintf(stderr, "%s: Warning: Information Control Block for Virtual Allocation Table is empty\n", appname);
 			break;
 		}
 
-		length = le64_to_cpu(fe->informationLength);
-
-		if (length < 36)
+		if (ea_length > disc->blocksize || offset > disc->blocksize || length > disc->blocksize || offset + length > disc->blocksize)
 		{
-			fprintf(stderr, "%s: Warning: Virtual Allocation Table is too small\n", appname);
+			fprintf(stderr, "%s: Warning: Information Control Block for Virtual Allocation Table is larger then block size\n", appname);
 			break;
 		}
 
-		if (offset+length > disc->blocksize)
-		{
-			fprintf(stderr, "%s: Warning: Virtual Allocation Table inside of Information Control Block is larger then block size\n", appname);
-			break;
-		}
-
-		vat = malloc(length);
-		if (!vat)
+		descs = malloc(length);
+		if (!descs)
 		{
 			fprintf(stderr, "%s: Error: malloc failed: %s\n", appname, strerror(errno));
 			break;
 		}
 
-		if (read_offset(fd, disc, vat, (size_t)i * disc->blocksize + offset, length, 1) < 0)
+		if (read_offset(fd, disc, descs, (off_t)i * disc->blocksize + offset, length, 1) < 0)
 		{
-			free(vat);
+			free(descs);
 			break;
+		}
+
+		if ((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_IN_ICB)
+		{
+			if (le64_to_cpu(fe->informationLength) > length)
+			{
+				fprintf(stderr, "%s: Warning: Virtual Allocation Table inside of Information Control Block is larger then allocated block\n", appname);
+				free(descs);
+				break;
+			}
+			vat = descs;
+			vat_length = le64_to_cpu(fe->informationLength);
+		}
+		else
+		{
+			sad = NULL;
+			lad = NULL;
+			if ((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT)
+			{
+				sad = (short_ad *)descs;
+				count = length / sizeof(short_ad);
+				vat_length = 0;
+				for (j = 0; j < count; ++j)
+				{
+					if ((le32_to_cpu(sad[j].extLength) & EXT_LENGTH_MASK) >= UINT64_MAX - vat_length)
+					{
+						vat_length = UINT64_MAX;
+						break;
+					}
+					vat_length += le32_to_cpu(sad[j].extLength) & EXT_LENGTH_MASK;
+				}
+			}
+			else if ((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_LONG)
+			{
+				lad = (long_ad *)descs;
+				count = length / sizeof(long_ad);
+				vat_length = 0;
+				for (j = 0; j < count; ++j)
+				{
+					if ((le32_to_cpu(lad[j].extLength) & EXT_LENGTH_MASK) >= UINT64_MAX - vat_length)
+					{
+						vat_length = UINT64_MAX;
+						break;
+					}
+					vat_length += le32_to_cpu(lad[j].extLength) & EXT_LENGTH_MASK;
+				}
+			}
+			else
+			{
+				fprintf(stderr, "%s: Error: Information Control Block for Virtual Allocation Table has unknown Allocation Descriptors type\n", appname);
+				free(descs);
+				break;
+			}
+
+			if (vat_length == 0)
+			{
+				fprintf(stderr, "%s: Warning: Virtual Allocation Table is empty\n", appname);
+				free(descs);
+				break;
+			}
+			else if (vat_length > (uint64_t)256 * disc->blocksize)
+			{
+				fprintf(stderr, "%s: Warning: Virtual Allocation Table is too big\n", appname);
+				free(descs);
+				break;
+			}
+
+			/* Prefer non-virtual partition if exists */
+			if (disc->udf_pd[0] && le16_to_cpu(disc->udf_pd[0]->partitionNumber) != le16_to_cpu(vpm->partitionNum))
+			{
+				ext_location = le32_to_cpu(disc->udf_pd[0]->partitionStartingLocation);
+				ext_partition = le16_to_cpu(disc->udf_pd[0]->partitionNumber);
+			}
+			else if (disc->udf_pd[1] && le16_to_cpu(disc->udf_pd[1]->partitionNumber) != le16_to_cpu(vpm->partitionNum))
+			{
+				ext_location = le32_to_cpu(disc->udf_pd[1]->partitionStartingLocation);
+				ext_partition = le16_to_cpu(disc->udf_pd[1]->partitionNumber);
+			}
+			else if (disc->udf_pd2[0] && le16_to_cpu(disc->udf_pd2[0]->partitionNumber) != le16_to_cpu(vpm->partitionNum))
+			{
+				ext_location = le32_to_cpu(disc->udf_pd2[0]->partitionStartingLocation);
+				ext_partition = le16_to_cpu(disc->udf_pd2[0]->partitionNumber);
+			}
+			else if (disc->udf_pd2[1] && le16_to_cpu(disc->udf_pd2[1]->partitionNumber) != le16_to_cpu(vpm->partitionNum))
+			{
+				ext_location = le32_to_cpu(disc->udf_pd2[1]->partitionStartingLocation);
+				ext_partition = le16_to_cpu(disc->udf_pd2[1]->partitionNumber);
+			}
+			else
+			{
+				ext_location = location;
+				ext_partition = le16_to_cpu(vpm->partitionNum);
+			}
+
+			vat = malloc(vat_length);
+			if (!vat)
+			{
+				fprintf(stderr, "%s: Error: malloc failed: %s\n", appname, strerror(errno));
+				free(descs);
+				break;
+			}
+
+			vat_offset = 0;
+			for (j = 0; j < count; ++j)
+			{
+				if ((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT)
+				{
+					ext_length = le32_to_cpu(sad[j].extLength) & EXT_LENGTH_MASK;
+					ext_position = le32_to_cpu(sad[j].extPosition);
+					if (ext_length == 0)
+						continue;
+				}
+				else
+				{
+					ext_length = le32_to_cpu(lad[j].extLength) & EXT_LENGTH_MASK;
+					ext_position = le32_to_cpu(lad[j].extLocation.logicalBlockNum);
+					if (ext_length == 0)
+						continue;
+					if (le32_to_cpu(lad[j].extLocation.partitionReferenceNum) != ext_partition)
+					{
+						fprintf(stderr, "%s: Error: Virtual Allocation Table is stored on different partition\n", appname);
+						count = 0;
+						break;
+					}
+				}
+
+				if (read_offset(fd, disc, vat + vat_offset, (off_t)(ext_location + ext_position) * disc->blocksize, ext_length, 1) != 0)
+				{
+					fprintf(stderr, "%s: Error: Virtual Allocation Table is damaged\n", appname);
+					count = 0;
+					break;
+				}
+
+				vat_offset += ext_length;
+			}
+
+			free(descs);
+
+			if (count == 0)
+			{
+				free(vat);
+				break;
+			}
 		}
 
 		if (fe->icbTag.fileType == ICBTAG_FILE_TYPE_UNDEF)
 		{
-			vat15 = (struct virtualAllocationTable15 *)(vat + ((length - 36) / 4) * 4);
+			if (vat_length < 36)
+			{
+				fprintf(stderr, "%s: Warning: Virtual Allocation Table is too small\n", appname);
+				free(vat);
+				break;
+			}
+			vat15 = (struct virtualAllocationTable15 *)(vat + ((vat_length - 36) / 4) * 4);
 			if (strncmp((const char *)vat15->vatIdent.ident, UDF_ID_ALLOC, sizeof(vat15->vatIdent.ident)) != 0)
 			{
 				fprintf(stderr, "%s: Warning: Virtual Allocation Table is damaged\n", appname);
@@ -1247,12 +1506,71 @@ static void read_vat(int fd, struct udf_disc *disc)
 				break;
 			}
 			disc->vat = (uint32_t *)vat;
-			disc->vat_entries = (length - 36) / 4;
+			disc->vat_entries = (vat_length - 36) / 4;
+			if (ea_length)
+			{
+				if (sizeof(ea_hdr) > ea_length)
+					fprintf(stderr, "%s: Warning: Extended Attributes for Virtual Allocation Table are damaged\n", appname);
+				else if (read_offset(fd, disc, &ea_hdr, (off_t)i * disc->blocksize + ea_offset, sizeof(ea_hdr), 1) != 0)
+					fprintf(stderr, "%s: Warning: Extended Attributes for Virtual Allocation Table are damaged\n", appname);
+				else
+				{
+					/* UDF 1.50 3.3.4.1: if attribute does not exist then location point to byte after the EA space */
+					ea_attr_offset = le32_to_cpu(ea_hdr.impAttrLocation);
+					while (ea_attr_offset < ea_length)
+					{
+						if (read_offset(fd, disc, &ea_attr, (off_t)i * disc->blocksize + ea_offset + ea_attr_offset, sizeof(ea_attr), 1) != 0)
+						{
+							fprintf(stderr, "%s: Warning: Extended Attributes for Virtual Allocation Table are damaged\n", appname);
+							break;
+						}
+						ea_attr_length = le32_to_cpu(ea_attr.attrLength);
+						if (ea_attr_length == 0)
+							break;
+						if (ea_attr_offset + ea_attr_length > ea_length || sizeof(ea_attr) + le32_to_cpu(ea_attr.impUseLength) > ea_attr_length)
+						{
+							fprintf(stderr, "%s: Warning: Extended Attributes for Virtual Allocation Table are damaged\n", appname);
+							break;
+						}
+						if (le32_to_cpu(ea_attr.attrType) == EXTATTR_IMP_USE && strncmp((const char *)ea_attr.impIdent.ident, UDF_ID_VAT_LVEXTENSION, sizeof(ea_attr.impIdent.ident)) == 0)
+						{
+							if (ea_attr_length < sizeof(ea_attr) + sizeof(ea_lv) || le32_to_cpu(ea_attr.impUseLength) < sizeof(ea_lv))
+							{
+								fprintf(stderr, "%s: Warning: Logical Volume Extended Information for Virtual Allocation Table is damaged\n", appname);
+								break;
+							}
+							if (read_offset(fd, disc, &ea_lv, (off_t)i * disc->blocksize + ea_offset + ea_attr_offset + sizeof(ea_attr), sizeof(ea_lv), 1) != 0)
+							{
+								fprintf(stderr, "%s: Warning: Logical Volume Extended Information for Virtual Allocation Table is damaged\n", appname);
+								break;
+							}
+							if (le64_to_cpu(ea_lv.verificationID) != unique_id)
+							{
+								fprintf(stderr, "%s: Warning: Logical Volume Extended Information for Virtual Allocation Table is damaged\n", appname);
+							}
+							else
+							{
+								if (disc->udf_lvd[0])
+									memcpy(disc->udf_lvd[0]->logicalVolIdent, ea_lv.logicalVolIdent, sizeof(ea_lv.logicalVolIdent));
+								if (disc->udf_lvd[1])
+									memcpy(disc->udf_lvd[1]->logicalVolIdent, ea_lv.logicalVolIdent, sizeof(ea_lv.logicalVolIdent));
+								if (disc->udf_lvid)
+								{
+									disc->num_files = le32_to_cpu(ea_lv.numFiles);
+									disc->num_dirs = le32_to_cpu(ea_lv.numDirs);
+								}
+								break;
+							}
+						}
+						ea_attr_offset += ea_attr_length;
+					}
+				}
+			}
 		}
 		else if (fe->icbTag.fileType == ICBTAG_FILE_TYPE_VAT20)
 		{
 			vat20 = (struct virtualAllocationTable20 *)vat;
-			if (vat20->lengthHeader < sizeof(*vat20) || vat20->lengthHeader != sizeof(*vat20) + vat20->lengthImpUse || vat20->lengthHeader > length)
+			if (le16_to_cpu(vat20->lengthHeader) < sizeof(*vat20) || le16_to_cpu(vat20->lengthHeader) != sizeof(*vat20) + le16_to_cpu(vat20->lengthImpUse) || le16_to_cpu(vat20->lengthHeader) > vat_length)
 			{
 				fprintf(stderr, "%s: Warning: Virtual Allocation Table is damaged\n", appname);
 				free(vat);
@@ -1269,13 +1587,13 @@ static void read_vat(int fd, struct udf_disc *disc)
 				disc->num_files = le32_to_cpu(vat20->numFiles);
 				disc->num_dirs = le32_to_cpu(vat20->numDirs);
 			}
-			disc->vat = (uint32_t *)(vat + vat20->lengthHeader);
-			disc->vat_entries = (length - vat20->lengthHeader) / 4;
+			disc->vat = (uint32_t *)(vat + le16_to_cpu(vat20->lengthHeader));
+			disc->vat_entries = (vat_length - le16_to_cpu(vat20->lengthHeader)) / 4;
 		}
 		else
 		{
-			free(vat);
-			continue;
+			fprintf(stderr, "%s: Error: Wrong file type\n", appname);
+			exit(1);
 		}
 
 		disc->vat_block = i;
@@ -1284,7 +1602,7 @@ static void read_vat(int fd, struct udf_disc *disc)
 			disc->udf_lvid->integrityType = cpu_to_le32(LVID_INTEGRITY_TYPE_CLOSE);
 
 		if (i != vat_block)
-			fprintf(stderr, "%s: Note: Found Virtual Allocation Table at block %u (expected at block %u)\n", appname, (unsigned int)i, (unsigned int)vat_block);
+			fprintf(stderr, "%s: Note: Found Virtual Allocation Table at block %"PRIu32" (expected at block %"PRIu32")\n", appname, i, vat_block);
 
 		return;
 	}
@@ -1292,40 +1610,53 @@ static void read_vat(int fd, struct udf_disc *disc)
 	fprintf(stderr, "%s: Error: Virtual Allocation Table not found, maybe wrong --vatblock?\n", appname);
 }
 
-static void setup_pspace(struct udf_disc *disc)
+static void setup_pspace(struct udf_disc *disc, int second)
 {
+	struct partitionDesc *pd;
 	struct udf_extent *ext, *new_ext;
 	uint32_t location, blocks;
-	int id;
 
-	if (disc->udf_pd[0])
-		id = 0;
-	else if (disc->udf_pd[1])
-		id = 1;
+	if (!second)
+	{
+		if (disc->udf_pd[0])
+			pd = disc->udf_pd[0];
+		else if (disc->udf_pd[1])
+			pd = disc->udf_pd[1];
+		else
+		{
+			fprintf(stderr, "%s: Warning: Partition Space not found\n", appname);
+			return;
+		}
+	}
 	else
 	{
-		fprintf(stderr, "%s: Warning: Partition Space not found\n", appname);
-		return;
+		if (disc->udf_pd2[0])
+			pd = disc->udf_pd2[0];
+		else if (disc->udf_pd2[1])
+			pd = disc->udf_pd2[1];
+		else
+			return;
 	}
 
-	location = le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation);
-	blocks = le32_to_cpu(disc->udf_pd[id]->partitionLength);
-	if (!location || !blocks)
+	location = le32_to_cpu(pd->partitionStartingLocation);
+
+	blocks = le32_to_cpu(pd->partitionLength);
+	if (!blocks)
 	{
-		fprintf(stderr, "%s: Warning: Partition Space not found\n", appname);
+		fprintf(stderr, "%s: Warning: %sPartition Space not found\n", appname, second ? "Second " : "");
 		return;
 	}
 
 	if (location + blocks > disc->blocks && !find_partition(disc, GP_PARTITION_MAP_TYPE_2, UDF_ID_VIRTUAL))
-		fprintf(stderr, "%s: Warning: Partition Space is beyond end of disk\n", appname);
+		fprintf(stderr, "%s: Warning: %sPartition Space is beyond end of disk\n", appname, second ? "Second " : "");
 
 	ext = find_extent(disc, location);
 	if (ext->space_type != USPACE)
 	{
-		fprintf(stderr, "%s: Warning: Partition Space overlaps with other blocks\n", appname);
-		ext = ext->next;
-		if (ext->space_type == USPACE)
+		fprintf(stderr, "%s: Warning: %sPartition Space overlaps with other blocks\n", appname, second ? "Second " : "");
+		if (ext->next && ext->next->space_type == USPACE)
 		{
+			ext = ext->next;
 			if (blocks > ext->start - location && blocks - (ext->start - location) < ext->blocks)
 				ext = set_extent(disc, PSPACE, ext->start, blocks - (ext->start - location));
 			else
@@ -1336,14 +1667,20 @@ static void setup_pspace(struct udf_disc *disc)
 		else
 		{
 			new_ext = malloc(sizeof(struct udf_extent));
+			if (!new_ext)
+			{
+				fprintf(stderr, "%s: Error: malloc failed: %s\n", appname, strerror(errno));
+				return;
+			}
 			new_ext->space_type = PSPACE;
 			new_ext->start = location;
 			new_ext->blocks = blocks;
 			new_ext->head = new_ext->tail = NULL;
-			new_ext->prev = ext->prev;
-			new_ext->next = ext;
+			new_ext->prev = ext;
+			new_ext->next = ext->next;
 			new_ext->prev->next = new_ext;
-			new_ext->next->prev = new_ext;
+			if (new_ext->next)
+				new_ext->next->prev = new_ext;
 		}
 	}
 	else
@@ -1351,7 +1688,7 @@ static void setup_pspace(struct udf_disc *disc)
 		if ((location == ext->start || (location > ext->start && location + blocks > ext->start + ext->blocks)) && blocks > ext->blocks)
 		{
 			if (ext != disc->tail)
-				fprintf(stderr, "%s: Warning: Partition Space overlaps with other blocks\n", appname);
+				fprintf(stderr, "%s: Warning: %sPartition Space overlaps with other blocks\n", appname, second ? "Second " : "");
 			ext = set_extent(disc, PSPACE, location, ext->blocks);
 			ext->blocks = blocks;
 		}
@@ -1364,24 +1701,21 @@ static void read_fsd(int fd, struct udf_disc *disc)
 {
 	long_ad *ad;
 	uint16_t partition;
-	uint32_t block_num, location, position, length;
+	uint32_t block, location, position, length;
 	struct genericPartitionMap *pmap;
 	struct udf_extent *ext;
+	struct partitionDesc *pd;
 	int id;
 
-	if (disc->udf_lvd[0] && disc->udf_pd[0])
+	if (disc->udf_lvd[0])
 		id = 0;
-	else if (disc->udf_lvd[1] && disc->udf_pd[1])
-		id = 1;
-	else if (disc->udf_lvd[0] && disc->udf_pd[1])
-		id = 0;
-	else if (disc->udf_lvd[1] && disc->udf_pd[0])
+	else if (disc->udf_lvd[1])
 		id = 1;
 	else
 		return;
 
 	ad = (long_ad *)disc->udf_lvd[id]->logicalVolContentsUse;
-	block_num = le32_to_cpu(ad->extLocation.logicalBlockNum);
+	block = le32_to_cpu(ad->extLocation.logicalBlockNum);
 	partition = le16_to_cpu(ad->extLocation.partitionReferenceNum);
 	length = le32_to_cpu(ad->extLength) & EXT_LENGTH_MASK;
 
@@ -1392,19 +1726,21 @@ static void read_fsd(int fd, struct udf_disc *disc)
 		return;
 	}
 
-	position = find_block_position(disc, pmap, block_num);
+	position = find_block_position(disc, pmap, block, &partition);
 	if (position == UINT32_MAX)
 	{
 		fprintf(stderr, "%s: Warning: File Set Descriptor cannot be read\n", appname);
 		return;
 	}
 
-	if (id == 0 && !disc->udf_pd[0])
-		id = 1;
-	else if (id == 1 && !disc->udf_pd[1])
-		id = 0;
+	pd = find_partition_descriptor(disc, partition);
+	if (!pd)
+	{
+		fprintf(stderr, "%s: Warning: File Set Descriptor cannot be read\n", appname);
+		return;
+	}
 
-	location = le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation) + position;
+	location = le32_to_cpu(pd->partitionStartingLocation) + position;
 
 	if (sizeof(*disc->udf_fsd) > length)
 	{
@@ -1419,14 +1755,14 @@ static void read_fsd(int fd, struct udf_disc *disc)
 		return;
 	}
 
-	if (read_offset(fd, disc, disc->udf_fsd, (size_t)location * disc->blocksize, length, 1) < 0)
+	if (read_offset(fd, disc, disc->udf_fsd, (off_t)location * disc->blocksize, length, 1) < 0)
 	{
 		free(disc->udf_fsd);
 		disc->udf_fsd = NULL;
 		return;
 	}
 
-	if (le32_to_cpu(disc->udf_fsd->descTag.tagLocation) != position)
+	if (le32_to_cpu(disc->udf_fsd->descTag.tagLocation) != block)
 	{
 		fprintf(stderr, "%s: Warning: Incorrect Logical Volume Integrity Descriptor\n", appname);
 		free(disc->udf_fsd);
@@ -1450,6 +1786,7 @@ static void read_fsd(int fd, struct udf_disc *disc)
 static void setup_total_space_blocks(struct udf_disc *disc)
 {
 	int id;
+	int warn_beyond;
 
 	if (disc->udf_pd[0])
 		id = 0;
@@ -1463,14 +1800,35 @@ static void setup_total_space_blocks(struct udf_disc *disc)
 
 	disc->total_space_blocks = le32_to_cpu(disc->udf_pd[id]->partitionLength);
 
-	if (disc->total_space_blocks + le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation) > disc->blocks && !find_partition(disc, GP_PARTITION_MAP_TYPE_2, UDF_ID_VIRTUAL))
+	warn_beyond = !find_partition(disc, GP_PARTITION_MAP_TYPE_2, UDF_ID_VIRTUAL);
+
+	if (warn_beyond && disc->total_space_blocks + le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation) > disc->blocks)
+	{
 		fprintf(stderr, "%s: Warning: Some space blocks are beyond end of disk\n", appname);
+		warn_beyond = 0;
+	}
+
+	if (disc->udf_pd2[0])
+		id = 0;
+	else if (disc->udf_pd2[1])
+		id = 1;
+	else
+		return;
+
+	if (warn_beyond && le32_to_cpu(disc->udf_pd2[id]->partitionLength) + le32_to_cpu(disc->udf_pd2[id]->partitionStartingLocation) > disc->blocks)
+		fprintf(stderr, "%s: Warning: Some space blocks are beyond end of disk\n", appname);
+
+	disc->total_space_blocks += le32_to_cpu(disc->udf_pd2[id]->partitionLength);
 }
 
-static uint32_t count_bitmap_blocks(int fd, struct udf_disc *disc, uint32_t location, uint32_t length)
+static uint32_t count_bitmap_blocks(int fd, struct udf_disc *disc, struct genericPartitionMap *pmap, uint32_t block, uint32_t length)
 {
 	unsigned long int buffer[512/sizeof(unsigned long int)];
 	unsigned long int val;
+	uint32_t location;
+	uint32_t position;
+	uint16_t partition;
+	struct partitionDesc *pd;
 	struct spaceBitmapDesc sbd;
 	uint32_t bits;
 	uint32_t bytes;
@@ -1483,7 +1841,17 @@ static uint32_t count_bitmap_blocks(int fd, struct udf_disc *disc, uint32_t loca
 		return 0;
 	}
 
-	if (read_offset(fd, disc, &sbd, (size_t)location * disc->blocksize, sizeof(sbd), 1) < 0)
+	position = find_block_position(disc, pmap, block, &partition);
+	if (position == UINT32_MAX)
+		return 0;
+
+	pd = find_partition_descriptor(disc, partition);
+	if (!pd)
+		return 0;
+
+	location = le32_to_cpu(pd->partitionStartingLocation) + position;
+
+	if (read_offset(fd, disc, &sbd, (off_t)location * disc->blocksize, sizeof(sbd), 1) < 0)
 		return 0;
 
 	bits = le32_to_cpu(sbd.numOfBits);
@@ -1543,9 +1911,13 @@ static uint32_t count_bitmap_blocks(int fd, struct udf_disc *disc, uint32_t loca
 	return blocks;
 }
 
-static uint32_t count_table_blocks(int fd, struct udf_disc *disc, uint32_t location, uint32_t length)
+static uint32_t count_table_blocks(int fd, struct udf_disc *disc, struct genericPartitionMap *pmap, uint32_t block, uint32_t length)
 {
 	unsigned char buffer[512];
+	uint32_t location;
+	uint32_t position;
+	uint16_t partition;
+	struct partitionDesc *pd;
 	struct unallocSpaceEntry *use;
 	size_t use_len;
 	uint64_t space, blocks;
@@ -1559,7 +1931,17 @@ static uint32_t count_table_blocks(int fd, struct udf_disc *disc, uint32_t locat
 		return 0;
 	}
 
-	if (read_offset(fd, disc, &buffer, (size_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
+	position = find_block_position(disc, pmap, block, &partition);
+	if (position == UINT32_MAX)
+		return 0;
+
+	pd = find_partition_descriptor(disc, partition);
+	if (!pd)
+		return 0;
+
+	location = le32_to_cpu(pd->partitionStartingLocation) + position;
+
+	if (read_offset(fd, disc, &buffer, (off_t)location * disc->blocksize, sizeof(buffer), 1) < 0)
 		return 0;
 
 	use = (struct unallocSpaceEntry *)&buffer;
@@ -1583,7 +1965,7 @@ static uint32_t count_table_blocks(int fd, struct udf_disc *disc, uint32_t locat
 	{
 		memcpy(use, &buffer, sizeof(buffer));
 		errno = 0;
-		if (read(fd, (void *)use + sizeof(buffer), use_len - sizeof(buffer)) != (ssize_t)(use_len - sizeof(buffer)))
+		if (read(fd, (uint8_t *)use + sizeof(buffer), use_len - sizeof(buffer)) != (ssize_t)(use_len - sizeof(buffer)))
 		{
 			fprintf(stderr, "%s: Warning: read failed: %s\n", appname, strerror(errno ? errno : EIO));
 			free(use);
@@ -1642,9 +2024,10 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 {
 	long_ad *ad;
 	uint16_t partition;
-	uint32_t blocks, position, location, length;
+	uint32_t blocks, location, length, value;
 	struct genericPartitionMap *pmap;
 	struct partitionHeaderDesc *phd;
+	struct partitionDesc *pd;
 	char *ident;
 	int id;
 
@@ -1663,7 +2046,8 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 
 	if (partition < le32_to_cpu(disc->udf_lvid->numOfPartitions))
 	{
-		blocks = le32_to_cpu(disc->udf_lvid->freeSpaceTable[partition]);
+		memcpy(&value, &disc->udf_lvid->data[sizeof(uint32_t)*partition], sizeof(value));
+		blocks = le32_to_cpu(value);
 		if (blocks != 0xFFFFFFFF)
 		{
 			disc->free_space_blocks = blocks;
@@ -1675,29 +2059,29 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 	if (!pmap)
 		return;
 
-	if (find_block_position(disc, pmap, 0) == UINT32_MAX)
+	if (find_block_position(disc, pmap, 0, &partition) == UINT32_MAX)
 	{
 		fprintf(stderr, "%s: Warning: Determining free space blocks is not possible\n", appname);
 		return;
 	}
 
-	if (disc->udf_pd[0])
-		id = 0;
-	else if (disc->udf_pd[1])
-		id = 1;
-	else
+	pd = find_partition_descriptor(disc, partition);
+	if (!pd)
+	{
+		fprintf(stderr, "%s: Warning: Determining free space blocks is not possible\n", appname);
 		return;
+	}
 
-	ident = (char *)disc->udf_pd[id]->partitionContents.ident;
-	length = sizeof(disc->udf_pd[id]->partitionContents.ident);
+	ident = (char *)pd->partitionContents.ident;
+	length = sizeof(pd->partitionContents.ident);
 	if (strncmp(ident, PD_PARTITION_CONTENTS_NSR02, length) != 0 && strncmp(ident, PD_PARTITION_CONTENTS_NSR03, length) != 0)
 	{
 		fprintf(stderr, "%s: Warning: Unknown Partition Descriptor Content, determining free space blocks is not possible\n", appname);
 		return;
 	}
 
-	location = le32_to_cpu(disc->udf_pd[id]->partitionStartingLocation);
-	phd = (struct partitionHeaderDesc *)disc->udf_pd[id]->partitionContentsUse;
+	location = le32_to_cpu(pd->partitionStartingLocation);
+	phd = (struct partitionHeaderDesc *)pd->partitionContentsUse;
 
 	if (disc->vat)
 	{
@@ -1708,8 +2092,7 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 	length = le32_to_cpu(phd->unallocSpaceBitmap.extLength) & EXT_LENGTH_MASK;
 	if (length)
 	{
-		position = find_block_position(disc, pmap, le32_to_cpu(phd->unallocSpaceBitmap.extPosition));
-		blocks = count_bitmap_blocks(fd, disc, location + position, length);
+		blocks = count_bitmap_blocks(fd, disc, pmap, le32_to_cpu(phd->unallocSpaceBitmap.extPosition), length);
 		if (blocks)
 		{
 			disc->free_space_blocks = blocks;
@@ -1720,8 +2103,7 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 	length = le32_to_cpu(phd->freedSpaceBitmap.extLength) & EXT_LENGTH_MASK;
 	if (length)
 	{
-		position = find_block_position(disc, pmap, le32_to_cpu(phd->freedSpaceBitmap.extPosition));
-		blocks = count_bitmap_blocks(fd, disc, location + position, length);
+		blocks = count_bitmap_blocks(fd, disc, pmap, le32_to_cpu(phd->freedSpaceBitmap.extPosition), length);
 		if (blocks)
 		{
 			disc->free_space_blocks = blocks;
@@ -1732,8 +2114,7 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 	length = le32_to_cpu(phd->unallocSpaceTable.extLength) & EXT_LENGTH_MASK;
 	if (length)
 	{
-		position = find_block_position(disc, pmap, le32_to_cpu(phd->unallocSpaceTable.extPosition));
-		blocks = count_table_blocks(fd, disc, location + position, length);
+		blocks = count_table_blocks(fd, disc, pmap, le32_to_cpu(phd->unallocSpaceTable.extPosition), length);
 		if (blocks)
 		{
 			disc->free_space_blocks = blocks;
@@ -1744,8 +2125,7 @@ static void scan_free_space_blocks(int fd, struct udf_disc *disc)
 	length = le32_to_cpu(phd->freedSpaceTable.extLength) & EXT_LENGTH_MASK;
 	if (length)
 	{
-		position = find_block_position(disc, pmap, le32_to_cpu(phd->freedSpaceTable.extPosition));
-		blocks = count_table_blocks(fd, disc, location + position, length);
+		blocks = count_table_blocks(fd, disc, pmap, le32_to_cpu(phd->freedSpaceTable.extPosition), length);
 		if (blocks)
 		{
 			disc->free_space_blocks = blocks;
@@ -1791,7 +2171,8 @@ int read_disc(int fd, struct udf_disc *disc)
 	parse_lvidiu(disc);
 	read_stable(fd, disc);
 	read_vat(fd, disc);
-	setup_pspace(disc);
+	setup_pspace(disc, 0);
+	setup_pspace(disc, 1);
 
 	/* TODO: setup USPACE extents */
 

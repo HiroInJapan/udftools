@@ -1,8 +1,8 @@
 if WORDS_LITTLEENDIAN
 sbin_PROGRAMS = udffsck
 udffsck_LDADD = $(top_builddir)/libudffs/libudffs.la
-#dffsck_SOURCES = main.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../mkudffs/mkudffs.h ../mkudffs/defaults.h ../mkudffs/file.h ../libudffs/crc.c ../include/libudffs.h ../include/udf_endian.h
-udffsck_SOURCES = main.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../libudffs/crc.c ../include/libudffs.h ../include/udf_endian.h
+#dffsck_SOURCES = main.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../mkudffs/mkudffs.h ../mkudffs/defaults.h ../mkudffs/file.h ../libudffs/crc.c ../include/libudffs.h ../include/bswap.h
+udffsck_SOURCES = main.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../libudffs/crc.c ../include/libudffs.h ../include/bswap.h
 
 AM_CFLAGS = -I$(top_srcdir)/include 
 AM_LDFLAGS = -lm -ldl 
@@ -30,7 +30,7 @@ testextra3_CFLAGS = -DEXTRA_TESTS=3
 noinst_PROGRAMS += testextra3
 
 unittest_LDADD = $(top_builddir)/libudffs/libudffs.la
-unittest_SOURCES = unit-test.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../mkudffs/mkudffs.h ../mkudffs/defaults.h ../mkudffs/file.h ../libudffs/crc.c ../include/libudffs.h ../include/udf_endian.h
+unittest_SOURCES = unit-test.c utils.c utils.h udffsck.c udffsck.h options.c options.h log.c log.h ../include/ecma_167.h ../include/osta_udf.h ../mkudffs/mkudffs.h ../mkudffs/defaults.h ../mkudffs/file.h ../libudffs/crc.c ../include/libudffs.h ../include/bswap.h
 unittest_LDFLAGS = -lcmocka -lm -I$(top_srcdir)/include
 #unittest_CFLAGS =  
 noinst_PROGRAMS += unittest

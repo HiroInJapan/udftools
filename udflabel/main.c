@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017  Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (C) 2017-2018  Pali Rohár <pali.rohar@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -85,7 +86,7 @@ static int get_sector_size(int fd)
 
 static uint16_t compute_crc(void *desc, size_t length)
 {
-	return cpu_to_le16(udf_crc((uint8_t *)desc + sizeof(tag), length - sizeof(tag), 0));
+	return udf_crc((uint8_t *)desc + sizeof(tag), length - sizeof(tag), 0);
 }
 
 static uint8_t compute_checksum(tag *tag)
@@ -127,7 +128,7 @@ static void write_desc(int fd, struct udf_disc *disc, enum udf_space_type type, 
 	struct udf_extent *ext;
 	struct udf_desc *desc;
 	off_t off;
-	size_t offset;
+	off_t offset;
 	ssize_t ret;
 
 	ext = disc->head;
@@ -139,11 +140,11 @@ static void write_desc(int fd, struct udf_disc *disc, enum udf_space_type type, 
 			if (!desc->data || desc->data->buffer != buffer)
 				continue;
 
-			printf("  ... at block %lu\n", (unsigned long int)(ext->start + desc->offset));
+			printf("  ... at block %"PRIu32"\n", ext->start + desc->offset);
 
-			offset = (size_t)disc->blocksize * (ext->start + desc->offset);
+			offset = (off_t)disc->blocksize * (ext->start + desc->offset);
 			off = lseek(fd, offset, SEEK_SET);
-			if (off != (off_t)-1 && (size_t)off != offset)
+			if (off != (off_t)-1 && off != offset)
 			{
 				errno = EIO;
 				off = (off_t)-1;
@@ -213,8 +214,15 @@ int main(int argc, char *argv[])
 	appname = "udflabel";
 
 	memset(&disc, 0, sizeof(disc));
-	disc.flags = FLAG_LOCALE;
+
 	disc.head = calloc(1, sizeof(struct udf_extent));
+	if (!disc.head)
+	{
+		fprintf(stderr, "%s: Error: calloc failed: %s\n", appname, strerror(errno));
+		exit(1);
+	}
+
+	disc.flags = FLAG_LOCALE;
 	disc.tail = disc.head;
 	disc.head->space_type = USPACE;
 
@@ -359,7 +367,7 @@ int main(int argc, char *argv[])
 
 	if (disc.udf_write_rev > 0x0260)
 	{
-		fprintf(stderr, "%s: Error: Minimal UDF Write Revision is %x.%02x, but udflabel supports only 2.60\n", appname, (unsigned int)(disc.udf_write_rev >> 8), (unsigned int)(disc.udf_write_rev & 0xFF));
+		fprintf(stderr, "%s: Error: Minimal UDF Write Revision is %"PRIx16".%02"PRIx16", but udflabel supports only 2.60\n", appname, disc.udf_write_rev >> 8, disc.udf_write_rev & 0xFF);
 		exit(1);
 	}
 
@@ -381,11 +389,6 @@ int main(int argc, char *argv[])
 			break;
 
 		case PD_ACCESS_TYPE_WRITE_ONCE:
-			if (!force && disc.udf_rev < 0x0200)
-			{
-				fprintf(stderr, "%s: Error: Cannot update writeonce partition of UDF revision prior to 2.00\n", appname);
-				exit(1);
-			}
 			if (!force && (new_fullvsid[0] != 0xFF || new_vid[0] != 0xFF))
 			{
 				fprintf(stderr, "%s: Error: Cannot update --vid, --vsid, --uuid or --fullvid on writeonce partition\n", appname);
@@ -535,7 +538,7 @@ int main(int argc, char *argv[])
 	{
 		if (!disc.udf_fsd || !check_desc(disc.udf_fsd, sizeof(*disc.udf_fsd)))
 		{
-			fprintf(stderr, "%s: Error: Main File Set Descriptor is damaged\n", appname);
+			fprintf(stderr, "%s: Error: File Set Descriptor is damaged\n", appname);
 			exit(1);
 		}
 	}
@@ -647,21 +650,21 @@ int main(int argc, char *argv[])
 		write_desc(fd, &disc, PSPACE, TAG_IDENT_FSD, disc.udf_fsd);
 	}
 
-	if (update_pvd)
+	if (update_pvd && disc.udf_pvd[1] != disc.udf_pvd[0])
 	{
 		printf("Updating Reserve Primary Volume Descriptor...\n");
 		update_desc(disc.udf_pvd[1], sizeof(*disc.udf_pvd[1]));
 		write_desc(fd, &disc, RVDS, TAG_IDENT_PVD, disc.udf_pvd[1]);
 	}
 
-	if (update_lvd)
+	if (update_lvd && disc.udf_lvd[1] != disc.udf_lvd[0])
 	{
 		printf("Updating Reserve Logical Volume Descriptor...\n");
 		update_desc(disc.udf_lvd[1], sizeof(*disc.udf_lvd[1]) + le32_to_cpu(disc.udf_lvd[1]->mapTableLength));
 		write_desc(fd, &disc, RVDS, TAG_IDENT_LVD, disc.udf_lvd[1]);
 	}
 
-	if (update_iuvd)
+	if (update_iuvd && disc.udf_iuvd[1] != disc.udf_iuvd[0])
 	{
 		printf("Updating Reserve Implementation Use Volume Descriptor...\n");
 		update_desc(disc.udf_iuvd[1], sizeof(*disc.udf_iuvd[1]));

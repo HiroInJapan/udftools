@@ -1,8 +1,8 @@
 /*
  * file.c
  *
- * Copyright (c) 2001-2002  Ben Fennema <bfennema@falcon.csc.calpoly.edu>
- * Copyright (c) 2016-2017  Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (c) 2001-2002  Ben Fennema
+ * Copyright (c) 2016-2018  Pali Rohár <pali.rohar@gmail.com>
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,6 +30,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "libudffs.h"
@@ -103,7 +104,7 @@ tag query_tag(struct udf_disc *disc, struct udf_extent *ext, struct udf_desc *de
 	data = desc->data;
 	while (data != NULL)
 	{
-		crc = udf_crc(data->buffer + offset, data->length - offset, crc);
+		crc = udf_crc((uint8_t *)data->buffer + offset, data->length - offset, crc);
 		offset = 0;
 		data = data->next;
 	}
@@ -126,16 +127,17 @@ tag query_tag(struct udf_disc *disc, struct udf_extent *ext, struct udf_desc *de
  * @param SerialNum the serial number to assign
  * @param Location the block number of the on-disc tag:Ident udf_descriptor
  * @param data the udf_data list head
+ * @param skip the skip data length
  * @param length the summed data length
  * @return the tag
  */
-tag udf_query_tag(struct udf_disc *disc, uint16_t Ident, uint16_t SerialNum, uint32_t Location, struct udf_data *data, uint16_t length)
+tag udf_query_tag(struct udf_disc *disc, uint16_t Ident, uint16_t SerialNum, uint32_t Location, struct udf_data *data, uint32_t skip, uint32_t length)
 {
 	tag ret;
 	int i;
 	uint16_t crc = 0;
-	int offset = sizeof(tag);
-	int clength;
+	uint32_t clength;
+	uint32_t offset = sizeof(tag);
 
 	ret.tagIdent = cpu_to_le16(Ident);
 	if (disc->udf_rev >= 0x0200)
@@ -150,9 +152,10 @@ tag udf_query_tag(struct udf_disc *disc, uint16_t Ident, uint16_t SerialNum, uin
 	{
 		if ((clength = data->length) > length)
 			clength = length;
-		crc = udf_crc(data->buffer + offset, clength - offset, crc);
+		crc = udf_crc((uint8_t *)data->buffer + skip + offset, clength - offset, crc);
 		length -= clength;
 		offset = 0;
+		skip = 0;
 		data = data->next;
 	}
 	ret.descCRC = cpu_to_le16(crc);
@@ -204,7 +207,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 					parent->data->length += sizeof(short_ad);
 					parent->data->buffer = realloc(parent->data->buffer, parent->length);
 					efe = (struct extendedFileEntry *)parent->data->buffer;
-					sad = (short_ad *)&efe->allocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs)];
+					sad = (short_ad *)&efe->extendedAttrAndAllocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs)];
 					sad->extPosition = cpu_to_le32(block);
 					sad->extLength = cpu_to_le32(data->length);
 					efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
@@ -217,7 +220,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 					parent->data->length += sizeof(long_ad);
 					parent->data->buffer = realloc(parent->data->buffer, parent->length);
 					efe = (struct extendedFileEntry *)parent->data->buffer;
-					lad = (long_ad *)&efe->allocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs)];
+					lad = (long_ad *)&efe->extendedAttrAndAllocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs)];
 					lad->extLocation.logicalBlockNum = cpu_to_le32(block);
 					lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
 					lad->extLength = cpu_to_le32(data->length);
@@ -231,7 +234,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 				{
 					short_ad *sad;
 
-					sad = (short_ad *)&efe->allocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs) - sizeof(short_ad)];
+					sad = (short_ad *)&efe->extendedAttrAndAllocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs) - sizeof(short_ad)];
 					fiddesc = find_desc(pspace, le32_to_cpu(sad->extPosition));
 					block = fiddesc->offset;
 					append_data(fiddesc, data);
@@ -241,7 +244,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 				{
 					long_ad *lad;
 
-					lad = (long_ad *)&efe->allocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs) - sizeof(long_ad)];
+					lad = (long_ad *)&efe->extendedAttrAndAllocDescs[le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs) - sizeof(long_ad)];
 					fiddesc = find_desc(pspace, le32_to_cpu(lad->extLocation.logicalBlockNum));
 					block = fiddesc->offset;
 					append_data(fiddesc, data);
@@ -276,7 +279,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 					parent->data->length += sizeof(short_ad);
 					parent->data->buffer = realloc(parent->data->buffer, parent->length);
 					fe = (struct fileEntry *)parent->data->buffer;
-					sad = (short_ad *)&fe->allocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs)];
+					sad = (short_ad *)&fe->extendedAttrAndAllocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs)];
 					sad->extPosition = cpu_to_le32(block);
 					sad->extLength = cpu_to_le32(data->length);
 					fe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
@@ -289,7 +292,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 					parent->data->length += sizeof(long_ad);
 					parent->data->buffer = realloc(parent->data->buffer, parent->length);
 					fe = (struct fileEntry *)parent->data->buffer;
-					lad = (long_ad *)&fe->allocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs)];
+					lad = (long_ad *)&fe->extendedAttrAndAllocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs)];
 					lad->extLocation.logicalBlockNum = cpu_to_le32(block);
 					lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
 					lad->extLength = cpu_to_le32(data->length);
@@ -303,7 +306,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 				{
 					short_ad *sad;
 
-					sad = (short_ad *)&fe->allocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs) - sizeof(short_ad)];
+					sad = (short_ad *)&fe->extendedAttrAndAllocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs) - sizeof(short_ad)];
 					fiddesc = find_desc(pspace, le32_to_cpu(sad->extPosition));
 					block = fiddesc->offset;
 					append_data(fiddesc, data);
@@ -313,7 +316,7 @@ int insert_desc(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 				{
 					long_ad *lad;
 
-					lad = (long_ad *)&fe->allocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs) - sizeof(long_ad)];
+					lad = (long_ad *)&fe->extendedAttrAndAllocDescs[le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs) - sizeof(long_ad)];
 					fiddesc = find_desc(pspace, le32_to_cpu(lad->extLocation.logicalBlockNum));
 					block = fiddesc->offset;
 					append_data(fiddesc, data);
@@ -438,8 +441,8 @@ void insert_fid(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 		fid->fileCharacteristics = filechar;
 		fid->lengthFileIdent = length;
 		fid->lengthOfImpUse = cpu_to_le16(0);
-		memcpy(fid->fileIdent, name, length);
-		fid->descTag = udf_query_tag(disc, TAG_IDENT_FID, 1, le32_to_cpu(fid->descTag.tagLocation), data, ilength);
+		memcpy(fid->impUseAndFileIdent, name, length);
+		fid->descTag = udf_query_tag(disc, TAG_IDENT_FID, 1, le32_to_cpu(fid->descTag.tagLocation), data, 0, ilength);
 
 		efe->informationLength = cpu_to_le64(le64_to_cpu(efe->informationLength) + ilength);
 		efe->objectSize = cpu_to_le64(le64_to_cpu(efe->objectSize) + ilength);
@@ -471,12 +474,176 @@ void insert_fid(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 		fid->fileCharacteristics = filechar;
 		fid->lengthFileIdent = length;
 		fid->lengthOfImpUse = cpu_to_le16(0);
-		memcpy(fid->fileIdent, name, length);
-		fid->descTag = udf_query_tag(disc, TAG_IDENT_FID, 1, le32_to_cpu(fid->descTag.tagLocation), data, ilength);
+		memcpy(fid->impUseAndFileIdent, name, length);
+		fid->descTag = udf_query_tag(disc, TAG_IDENT_FID, 1, le32_to_cpu(fid->descTag.tagLocation), data, 0, ilength);
 		fe->informationLength = cpu_to_le64(le64_to_cpu(fe->informationLength) + ilength);
 	}
 	*(tag *)desc->data->buffer = query_tag(disc, pspace, desc, 1);
 	*(tag *)parent->data->buffer = query_tag(disc, pspace, parent, 1);
+}
+
+void insert_ea(struct udf_disc *disc, struct udf_desc *desc, struct genericFormat *ea, uint32_t length)
+{
+	struct extendedAttrHeaderDesc *ea_hdr;
+	struct extendedFileEntry *efe = NULL;
+	struct fileEntry *fe = NULL;
+	uint8_t *extendedAttr;
+	uint32_t lengthExtendedAttr;
+	uint32_t location = 0;
+
+#define UPDATE_PTR                                                            \
+	do {                                                                  \
+		if (disc->flags & FLAG_EFE)                                   \
+		{                                                             \
+			efe = (struct extendedFileEntry *)desc->data->buffer; \
+			lengthExtendedAttr = efe->lengthExtendedAttr;         \
+			extendedAttr = efe->extendedAttrAndAllocDescs;        \
+		}                                                             \
+		else                                                          \
+		{                                                             \
+			fe = (struct fileEntry *)desc->data->buffer;          \
+			lengthExtendedAttr = fe->lengthExtendedAttr;          \
+			extendedAttr = fe->extendedAttrAndAllocDescs;         \
+		}                                                             \
+		ea_hdr = (struct extendedAttrHeaderDesc *)extendedAttr;       \
+	} while ( 0 )
+
+	UPDATE_PTR;
+
+	if (le32_to_cpu(lengthExtendedAttr) && le32_to_cpu(ea_hdr->impAttrLocation) > le32_to_cpu(lengthExtendedAttr))
+		ea_hdr->impAttrLocation = cpu_to_le32(0xFFFFFFFF);
+	if (le32_to_cpu(lengthExtendedAttr) && le32_to_cpu(ea_hdr->appAttrLocation) > le32_to_cpu(lengthExtendedAttr))
+		ea_hdr->appAttrLocation = cpu_to_le32(0xFFFFFFFF);
+
+	if (!le32_to_cpu(lengthExtendedAttr))
+	{
+		desc->length += sizeof(*ea_hdr);
+		desc->data->length += sizeof(*ea_hdr);
+		desc->data->buffer = realloc(desc->data->buffer, desc->data->length);
+
+		UPDATE_PTR;
+
+		if (disc->flags & FLAG_EFE)
+		{
+			lengthExtendedAttr = efe->lengthExtendedAttr = cpu_to_le32(sizeof(*ea_hdr));
+			if (le32_to_cpu(efe->lengthAllocDescs))
+				memmove(&efe->extendedAttrAndAllocDescs[sizeof(*ea_hdr)], efe->extendedAttrAndAllocDescs, le32_to_cpu(efe->lengthAllocDescs));
+		}
+		else
+		{
+			lengthExtendedAttr = fe->lengthExtendedAttr = cpu_to_le32(sizeof(*ea_hdr));
+			if (le32_to_cpu(fe->lengthAllocDescs))
+				memmove(&fe->extendedAttrAndAllocDescs[sizeof(*ea_hdr)], fe->extendedAttrAndAllocDescs, le32_to_cpu(fe->lengthAllocDescs));
+		}
+
+		ea_hdr->impAttrLocation = cpu_to_le32(0xFFFFFFFF);
+		ea_hdr->appAttrLocation = cpu_to_le32(0xFFFFFFFF);
+	}
+
+	if (le32_to_cpu(ea->attrType) < 2048)
+	{
+		desc->length += length;
+		desc->data->length += length;
+		desc->data->buffer = realloc(desc->data->buffer, desc->data->length);
+
+		UPDATE_PTR;
+
+		if (le32_to_cpu(ea_hdr->appAttrLocation) != 0xFFFFFFFF)
+		{
+			location = le32_to_cpu(ea_hdr->appAttrLocation);
+			memmove(&extendedAttr[location+length], &extendedAttr[location], le32_to_cpu(lengthExtendedAttr) - location);
+			ea_hdr->appAttrLocation = cpu_to_le32(location+length);
+		}
+
+		if (le32_to_cpu(ea_hdr->impAttrLocation) != 0xFFFFFFFF)
+		{
+			location = le32_to_cpu(ea_hdr->impAttrLocation);
+			if (le32_to_cpu(ea_hdr->appAttrLocation) == 0xFFFFFFFF)
+				memmove(&extendedAttr[location+length], &extendedAttr[location], le32_to_cpu(lengthExtendedAttr) - location);
+			else
+				memmove(&extendedAttr[location+length], &extendedAttr[location], le32_to_cpu(ea_hdr->appAttrLocation) - location);
+			ea_hdr->impAttrLocation = cpu_to_le32(location+length);
+		}
+		else if (le32_to_cpu(ea_hdr->appAttrLocation) == 0xFFFFFFFF)
+		{
+			location = le32_to_cpu(lengthExtendedAttr);
+		}
+
+		memcpy(&extendedAttr[location], ea, length);
+		lengthExtendedAttr = cpu_to_le32(le32_to_cpu(lengthExtendedAttr) + length);
+		if (disc->flags & FLAG_EFE)
+			efe->lengthExtendedAttr = lengthExtendedAttr;
+		else
+			fe->lengthExtendedAttr = lengthExtendedAttr;
+	}
+	else if (le32_to_cpu(ea->attrType) < 65536)
+	{
+		desc->length += length;
+		desc->data->length += length;
+		desc->data->buffer = realloc(desc->data->buffer, desc->data->length);
+
+		UPDATE_PTR;
+
+		if (le32_to_cpu(ea_hdr->appAttrLocation) != 0xFFFFFFFF)
+		{
+			location = le32_to_cpu(ea_hdr->appAttrLocation);
+			memmove(&extendedAttr[location+length], &extendedAttr[location], le32_to_cpu(lengthExtendedAttr) - location);
+			ea_hdr->appAttrLocation = cpu_to_le32(location+length);
+		}
+		else
+		{
+			location = le32_to_cpu(lengthExtendedAttr);
+		}
+
+		if (le32_to_cpu(ea_hdr->impAttrLocation) == 0xFFFFFFFF)
+		{
+			if (le32_to_cpu(ea_hdr->appAttrLocation) == 0xFFFFFFFF)
+				ea_hdr->impAttrLocation = lengthExtendedAttr;
+			else
+				ea_hdr->impAttrLocation = ea_hdr->appAttrLocation;
+		}
+
+		memcpy(&extendedAttr[location], ea, length);
+		lengthExtendedAttr = cpu_to_le32(le32_to_cpu(lengthExtendedAttr) + length);
+		if (disc->flags & FLAG_EFE)
+			efe->lengthExtendedAttr = lengthExtendedAttr;
+		else
+			fe->lengthExtendedAttr = lengthExtendedAttr;
+	}
+	else
+	{
+		desc->length += length;
+		desc->data->length += length;
+		desc->data->buffer = realloc(desc->data->buffer, desc->data->length);
+
+		UPDATE_PTR;
+
+		if (le32_to_cpu(ea_hdr->appAttrLocation) == 0xFFFFFFFF)
+			ea_hdr->appAttrLocation = lengthExtendedAttr;
+
+		memcpy(&extendedAttr[le32_to_cpu(lengthExtendedAttr)], ea, length);
+		lengthExtendedAttr = cpu_to_le32(le32_to_cpu(lengthExtendedAttr) + length);
+		if (disc->flags & FLAG_EFE)
+			efe->lengthExtendedAttr = lengthExtendedAttr;
+		else
+			fe->lengthExtendedAttr = lengthExtendedAttr;
+	}
+
+	/* UDF-1.50: 3.3.4.1 Extended Attribute Header Descriptor
+	 * If the attributes associated with the location fields highlighted above do not exist,
+	 * then the value of the location field shall point to the byte after the extended
+	 * attribute space. */
+	if (disc->udf_rev < 0x0200)
+	{
+		if (le32_to_cpu(lengthExtendedAttr) && le32_to_cpu(ea_hdr->impAttrLocation) == 0xFFFFFFFF)
+			ea_hdr->impAttrLocation = lengthExtendedAttr;
+		if (le32_to_cpu(lengthExtendedAttr) && le32_to_cpu(ea_hdr->appAttrLocation) == 0xFFFFFFFF)
+			ea_hdr->appAttrLocation = lengthExtendedAttr;
+	}
+
+	ea_hdr->descTag = udf_query_tag(disc, TAG_IDENT_EAHD, 1, desc->offset, desc->data, (disc->flags & FLAG_EFE) ? sizeof(*efe) : sizeof(*fe), sizeof(*ea_hdr));
+
+#undef UPDATE_PTR
 }
 
 /**
@@ -722,6 +889,7 @@ static inline unsigned long udf_find_next_one_bit (void * addr, unsigned long si
 	tmp = leBPL_to_cpup(&tmp);
 found_first:
 	tmp &= ~0UL >> (BITS_PER_LONG-size);
+	tmp |= (1UL << size);
 found_middle:
 	return result + ffz(~tmp);
 }
@@ -791,7 +959,7 @@ int udf_alloc_bitmap_blocks(struct udf_disc *disc, struct udf_desc *bitmap, uint
 	do
 	{
 		start = ((start + alignment - 1) / alignment) * alignment;
-		if (start + blocks >= le32_to_cpu(sbd->numOfBits))
+		if (start + blocks > le32_to_cpu(sbd->numOfBits))
 		{
 			fprintf(stderr, "%s: Error: Not enough blocks on device\n", appname);
 			exit(1);
@@ -802,7 +970,7 @@ int udf_alloc_bitmap_blocks(struct udf_disc *disc, struct udf_desc *bitmap, uint
 		}
 		else
 			start = end = udf_find_next_one_bit(sbd->bitmap, le32_to_cpu(sbd->numOfBits), start);
-	} while ((end - start) <= blocks);
+	} while ((end - start) < blocks);
 
 	clear_bits(sbd->bitmap, start, blocks);
 	return start;
@@ -869,7 +1037,7 @@ int udf_alloc_table_blocks(struct udf_disc *disc, struct udf_desc *table, uint32
 		sad->extLength = cpu_to_le32(EXT_NOT_RECORDED_ALLOCATED | (end - start - blocks) * disc->blocksize);
 		use->lengthAllocDescs = cpu_to_le32(le32_to_cpu(use->lengthAllocDescs) + sizeof(short_ad));
 	}
-	use->descTag = udf_query_tag(disc, TAG_IDENT_USE, 1, table->offset, table->data, sizeof(struct unallocSpaceEntry) + le32_to_cpu(use->lengthAllocDescs));
+	use->descTag = udf_query_tag(disc, TAG_IDENT_USE, 1, table->offset, table->data, 0, sizeof(struct unallocSpaceEntry) + le32_to_cpu(use->lengthAllocDescs));
 	return start;
 }
 
@@ -884,8 +1052,11 @@ int udf_alloc_blocks(struct udf_disc *disc, struct udf_extent *pspace, uint32_t 
 {
 	struct udf_desc *desc;
 	struct partitionHeaderDesc *phd = (struct partitionHeaderDesc *)disc->udf_pd[0]->partitionContentsUse;
+	uint32_t value;
 
-	disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - blocks);
+	memcpy(&value, &disc->udf_lvid->data[sizeof(uint32_t)*0], sizeof(value));
+	value = cpu_to_le32(le32_to_cpu(value) - blocks);
+	memcpy(&disc->udf_lvid->data[sizeof(uint32_t)*0], &value, sizeof(value));
 
 	if (disc->flags & FLAG_FREED_BITMAP)
 	{
@@ -923,7 +1094,7 @@ int udf_alloc_blocks(struct udf_disc *disc, struct udf_extent *pspace, uint32_t 
 			exit(1);
 		}
 		for (i = 0; i < blocks; ++i)
-			disc->vat[disc->vat_entries++] = start+i;
+			disc->vat[disc->vat_entries++] = cpu_to_le32(start+i);
 		return start;
 	}
 	else

@@ -4,8 +4,8 @@
  * This file is based on OSTA UDF(tm) 2.01 (March 15, 2000)
  * http://www.osta.org
  *
- * Copyright (c) 2001-2002  Ben Fennema <bfennema@falcon.csc.calpoly.edu>
- * Copyright (c) 2017       Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (c) 2001-2002  Ben Fennema
+ * Copyright (c) 2017-2018  Pali Rohár <pali.rohar@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -55,6 +55,7 @@
 #define UDF_ID_FREE_EA			"*UDF FreeEASpace"
 #define UDF_ID_FREE_APP_EA		"*UDF FreeAppEASpace"
 #define UDF_ID_DVD_CGMS			"*UDF DVD CGMS Info"
+#define UDF_ID_VAT_LVEXTENSION		"*UDF VAT LVExtension"
 #define UDF_ID_OS2_EA			"*UDF OS/2 EA"
 #define UDF_ID_OS2_EA_LENGTH		"*UDF OS/2 EALength"
 #define UDF_ID_MAC_VOLUME		"*UDF Mac VolumeInfo"
@@ -101,7 +102,7 @@ struct logicalVolIntegrityDescImpUse
 	uint16_t	minUDFReadRev;
 	uint16_t	minUDFWriteRev;
 	uint16_t	maxUDFWriteRev;
-	uint8_t		impUse[0];
+	uint8_t		impUse[];
 } __attribute__ ((packed));
 
 /* Implementation Use Volume Descriptor (UDF 2.01 2.2.7) */
@@ -158,7 +159,7 @@ struct sparablePartitionMap
 /* Virtual Allocation Table (UDF 1.5 2.2.10) */
 struct virtualAllocationTable15
 {
-	uint32_t	vatEntry[0];
+/*	uint32_t	vatEntry[0]; */
 	regid		vatIdent;
 	uint32_t	previousVATICBLoc;
 } __attribute__ ((packed));  
@@ -178,8 +179,8 @@ struct virtualAllocationTable20
 	uint16_t	minUDFWriteRev;
 	uint16_t	maxUDFWriteRev;
 	uint16_t	reserved;
-	uint8_t		impUse[0];
-	uint32_t	vatEntry[0];
+	uint8_t		impUse[];
+/*	uint32_t	vatEntry[0]; */
 } __attribute__ ((packed));
 
 #define ICBTAG_FILE_TYPE_VAT20		0xF8U
@@ -199,7 +200,7 @@ struct sparingTable
 	uint16_t	reserved;
 	uint32_t	sequenceNum;
 	struct sparingEntry
-			mapEntry[0];
+			mapEntry[];
 } __attribute__ ((packed));
 
 /* struct long_ad ICB - ADImpUse (UDF 2.01 2.2.4.3) */
@@ -219,7 +220,7 @@ struct allocDescImpUse
 struct freeEaSpace
 {
 	uint16_t	headerChecksum;
-	uint8_t		freeEASpace[0];
+	uint8_t		freeEASpace[];
 } __attribute__ ((packed));
 
 /* DVD Copyright Management Information (UDF 2.01 3.3.4.5.1.2) */
@@ -231,12 +232,22 @@ struct DVDCopyrightImpUse
 	uint8_t		protectionSystemInfo[4];
 } __attribute__ ((packed));
 
+/* Logical Volume Extended Information (UDF 1.50 Errata, DCN 5003, 3.3.4.5.1.3) */
+struct LVExtensionEA
+{
+	uint16_t	headerChecksum;
+	uint64_t	verificationID;
+	uint32_t	numFiles;
+	uint32_t	numDirs;
+	dstring		logicalVolIdent[128];
+} __attribute__ ((packed));
+
 /* Application Use Extended Attribute (UDF 2.01 3.3.4.6) */
 /* FreeAppEASpace (UDF 2.01 3.3.4.6.1) */
 struct freeAppEASpace
 {
 	uint16_t	headerChecksum;
-	uint8_t		freeEASpace[0];
+	uint8_t		freeEASpace[];
 } __attribute__ ((packed));
 
 /* UDF Defined System Stream (UDF 2.01 3.3.7) */

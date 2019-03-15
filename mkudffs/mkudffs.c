@@ -1,8 +1,8 @@
 /*
  * mkudffs.c
  *
- * Copyright (c) 2001-2002  Ben Fennema <bfennema@falcon.csc.calpoly.edu>
- * Copyright (c) 2014-2017  Pali Rohár <pali.rohar@gmail.com>
+ * Copyright (c) 2001-2002  Ben Fennema
+ * Copyright (c) 2014-2018  Pali Rohár <pali.rohar@gmail.com>
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,6 +30,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -50,9 +52,8 @@ void udf_init_disc(struct udf_disc *disc)
 	struct timeval	tv;
 	struct tm 	*tm;
 	int		altzone;
-	unsigned long int rnd;
-
-	srand(time(NULL));
+	uint32_t	uuid_time;
+	char		uuid[17];
 
 	memset(disc, 0x00, sizeof(*disc));
 
@@ -62,31 +63,50 @@ void udf_init_disc(struct udf_disc *disc)
 	disc->blkssz = 512;
 	disc->mode = 0755;
 
-	gettimeofday(&tv, NULL);
-	tm = localtime(&tv.tv_sec);
-	altzone = timezone - 3600;
-	if (daylight)
-		ts.typeAndTimezone = cpu_to_le16(((-altzone/60) & 0x0FFF) | 0x1000);
+	if (gettimeofday(&tv, NULL) != 0 || tv.tv_sec == (time_t)-1 || (tm = localtime(&tv.tv_sec)) == NULL || tm->tm_year < 1-1900 || tm->tm_year > 9999-1900)
+	{
+		/* fallback to 1.1.1980 00:00:00 */
+		ts.typeAndTimezone = cpu_to_le16(0x1000);
+		ts.year = cpu_to_le16(1980);
+		ts.month = 1;
+		ts.day = 1;
+		ts.hour = 0;
+		ts.minute = 0;
+		ts.second = 0;
+		ts.centiseconds = 0;
+		ts.hundredsOfMicroseconds = 0;
+		ts.microseconds = 0;
+		/* and for uuid use random bytes */
+		uuid_time = randu32();
+	}
 	else
-		ts.typeAndTimezone = cpu_to_le16(((-timezone/60) & 0x0FFF) | 0x1000);
-	ts.year = cpu_to_le16(1900 + tm->tm_year);
-	ts.month = 1 + tm->tm_mon;
-	ts.day = tm->tm_mday;
-	ts.hour = tm->tm_hour;
-	ts.minute = tm->tm_min;
-	ts.second = tm->tm_sec;
-	ts.centiseconds = tv.tv_usec / 10000;
-	ts.hundredsOfMicroseconds = (tv.tv_usec - ts.centiseconds * 10000) / 100;
-	ts.microseconds = tv.tv_usec - ts.centiseconds * 10000 - ts.hundredsOfMicroseconds * 100;
-
-	get_random_bytes(&rnd, sizeof(rnd));
+	{
+		altzone = timezone - 3600;
+		if (daylight)
+			ts.typeAndTimezone = cpu_to_le16(((-altzone/60) & 0x0FFF) | 0x1000);
+		else
+			ts.typeAndTimezone = cpu_to_le16(((-timezone/60) & 0x0FFF) | 0x1000);
+		ts.year = cpu_to_le16(1900 + tm->tm_year);
+		ts.month = 1 + tm->tm_mon;
+		ts.day = tm->tm_mday;
+		ts.hour = tm->tm_hour;
+		ts.minute = tm->tm_min;
+		ts.second = tm->tm_sec;
+		ts.centiseconds = tv.tv_usec / 10000;
+		ts.hundredsOfMicroseconds = (tv.tv_usec - ts.centiseconds * 10000) / 100;
+		ts.microseconds = tv.tv_usec - ts.centiseconds * 10000 - ts.hundredsOfMicroseconds * 100;
+		if (tv.tv_sec < 0)
+			uuid_time = randu32();
+		else
+			uuid_time = tv.tv_sec & 0xFFFFFFFF;
+	}
 
 	/* Allocate/Initialize Descriptors */
 	disc->udf_pvd[0] = malloc(sizeof(struct primaryVolDesc));
 	memcpy(disc->udf_pvd[0], &default_pvd, sizeof(struct primaryVolDesc));
 	memcpy(&disc->udf_pvd[0]->recordingDateAndTime, &ts, sizeof(timestamp));
-	sprintf((char *)&disc->udf_pvd[0]->volSetIdent[1], "%08lx%08lx%s",
-		((unsigned long int)mktime(tm))%0xFFFFFFFF, rnd%0xFFFFFFFF, &disc->udf_pvd[0]->volSetIdent[17]);
+	snprintf(uuid, sizeof(uuid), "%08" PRIu32 "%08" PRIu32, uuid_time, randu32());
+	memcpy(&disc->udf_pvd[0]->volSetIdent[1], uuid, 16);
 	disc->udf_pvd[0]->volIdent[31] = strlen((char *)disc->udf_pvd[0]->volIdent);
 	disc->udf_pvd[0]->volSetIdent[127] = strlen((char *)disc->udf_pvd[0]->volSetIdent);
 
@@ -142,14 +162,16 @@ void udf_init_disc(struct udf_disc *disc)
 	disc->head->tail = NULL;
 }
 
-int udf_set_version(struct udf_disc *disc, int udf_rev)
+int udf_set_version(struct udf_disc *disc, uint16_t udf_rev)
 {
 	struct logicalVolIntegrityDescImpUse *lvidiu;
 	uint16_t udf_rev_le16;
 
 	if (disc->udf_rev == udf_rev)
 		return 0;
-	else if (udf_rev != 0x0102 &&
+	else if (
+		udf_rev != 0x0101 &&
+		udf_rev != 0x0102 &&
 		udf_rev != 0x0150 &&
 		udf_rev != 0x0200 &&
 		udf_rev != 0x0201 &&
@@ -172,7 +194,7 @@ int udf_set_version(struct udf_disc *disc, int udf_rev)
 		disc->flags &= ~FLAG_EFE;
 		strcpy((char *)disc->udf_pd[0]->partitionContents.ident, PD_PARTITION_CONTENTS_NSR02);
 	}
-	else // 0x0102
+	else // 0x0102 and older
 	{
 		disc->flags &= ~FLAG_VAT;
 		disc->flags &= ~FLAG_EFE;
@@ -185,33 +207,24 @@ int udf_set_version(struct udf_disc *disc, int udf_rev)
 	memcpy(disc->udf_iuvd[0]->impIdent.identSuffix, &udf_rev_le16, sizeof(udf_rev_le16));
 	memcpy(disc->udf_stable[0]->sparingIdent.identSuffix, &udf_rev_le16, sizeof(udf_rev_le16));
 	lvidiu = query_lvidiu(disc);
-	if (udf_rev == 0x0260)
-		lvidiu->minUDFReadRev = cpu_to_le16(0x0250);
-	else
-		lvidiu->minUDFReadRev = cpu_to_le16(udf_rev);
-	lvidiu->minUDFWriteRev = cpu_to_le16(udf_rev);
-	lvidiu->maxUDFWriteRev = cpu_to_le16(udf_rev);
-	return 0;
-}
-
-void get_random_bytes(void *buffer, size_t count)
-{
-	int fd;
-	size_t i;
-
-	fd = open("/dev/urandom", O_RDONLY);
-	if (fd >= 0)
+	if (udf_rev < 0x0102)
 	{
-		if (read(fd, buffer, count) == (ssize_t)count)
-		{
-			close(fd);
-			return;
-		}
-		close(fd);
+		/* The ImplementationUse area for the Logical Volume Integrity Descriptor
+		 * prior to UDF 1.02 does not define UDF revisions, so clear these fields */
+		lvidiu->minUDFReadRev = cpu_to_le16(0);
+		lvidiu->minUDFWriteRev = cpu_to_le16(0);
+		lvidiu->maxUDFWriteRev = cpu_to_le16(0);
 	}
-
-	for (i = 0; i < count; ++i)
-		((uint8_t *)buffer)[i] = rand() % 0xFF;
+	else
+	{
+		if (udf_rev == 0x0260)
+			lvidiu->minUDFReadRev = cpu_to_le16(0x0250);
+		else
+			lvidiu->minUDFReadRev = cpu_to_le16(udf_rev);
+		lvidiu->minUDFWriteRev = cpu_to_le16(udf_rev);
+		lvidiu->maxUDFWriteRev = cpu_to_le16(udf_rev);
+	}
+	return 0;
 }
 
 void split_space(struct udf_disc *disc)
@@ -223,7 +236,7 @@ void split_space(struct udf_disc *disc)
 	struct sparablePartitionMap *spm;
 	struct udf_extent *ext;
 	uint32_t accessType;
-	uint32_t i, j;
+	uint32_t i, value;
 
 	// OS boot area
 	if (disc->flags & FLAG_BOOTAREA_MBR)
@@ -276,8 +289,11 @@ void split_space(struct udf_disc *disc)
 	}
 
 	accessType = le32_to_cpu(disc->udf_pd[0]->accessType);
-	if ((accessType == PD_ACCESS_TYPE_OVERWRITABLE || accessType == PD_ACCESS_TYPE_REWRITABLE) && sizes[LVID_SIZE] * (size_t)disc->blocksize < 8192)
+	if ((accessType == PD_ACCESS_TYPE_OVERWRITABLE || accessType == PD_ACCESS_TYPE_REWRITABLE) && (uint64_t)sizes[LVID_SIZE] * disc->blocksize < 8192 && blocks > 257)
 		sizes[LVID_SIZE] = (8192 + disc->blocksize-1) / disc->blocksize;
+
+	if (sizes[VDS_SIZE] > 6 && blocks <= 257)
+		sizes[VDS_SIZE] = 6;
 
 	if (!(disc->flags & FLAG_VAT) && blocks < 770)
 		start = 0;
@@ -301,7 +317,7 @@ void split_space(struct udf_disc *disc)
 		}
 		set_extent(disc, RVDS, start, sizes[VDS_SIZE]);
 	}
-	else
+	else if (blocks > 257)
 	{
 		if (blocks >= 3072)
 			start = find_next_extent_size(disc, (blocks-257+97)/32*32, USPACE, sizes[VDS_SIZE], offsets[VDS_SIZE]);
@@ -415,16 +431,18 @@ void split_space(struct udf_disc *disc)
 	for (i=0; i<le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps); i++)
 	{
 		if (i == 1)
-			disc->udf_lvid->freeSpaceTable[i] = cpu_to_le32(0xFFFFFFFF);
+			value = cpu_to_le32(0xFFFFFFFF);
 		else
-			disc->udf_lvid->freeSpaceTable[i] = cpu_to_le32(size);
+			value = cpu_to_le32(size);
+		memcpy(&disc->udf_lvid->data[sizeof(uint32_t)*i], &value, sizeof(value));
 	}
-	for (j=0; j<le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps); j++)
+	for (i=0; i<le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps); i++)
 	{
-		if (j == 1)
-			disc->udf_lvid->sizeTable[i+j] = cpu_to_le32(0xFFFFFFFF);
+		if (i == 1)
+			value = cpu_to_le32(0xFFFFFFFF);
 		else
-			disc->udf_lvid->sizeTable[i+j] = cpu_to_le32(size);
+			value = cpu_to_le32(size);
+		memcpy(&disc->udf_lvid->data[sizeof(uint32_t)*le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps) + sizeof(uint32_t)*i], &value, sizeof(value));
 	}
 
 	if (!next_extent(disc->head, LVID))
@@ -448,7 +466,7 @@ void dump_space(struct udf_disc *disc)
 
 	while (start_ext != NULL)
 	{
-		printf("start=%lu, blocks=%lu, type=", (unsigned long int)start_ext->start, (unsigned long int)start_ext->blocks);
+		printf("start=%"PRIu32", blocks=%"PRIu32", type=", start_ext->start, start_ext->blocks);
 		for (i=0; i<UDF_SPACE_TYPE_SIZE; i++)
 		{
 			if (!(start_ext->space_type & (1<<i)))
@@ -502,7 +520,7 @@ static void fill_mbr(struct udf_disc *disc, struct mbr *mbr, uint32_t start)
 	}
 
 	if (!mbr->disk_signature)
-		get_random_bytes(&mbr->disk_signature, sizeof(mbr->disk_signature));
+		mbr->disk_signature = le32_to_cpu(randu32());
 
 	lba_blocks = ((uint64_t)disc->blocks * disc->blocksize + disc->blkssz - 1) / disc->blkssz;
 
@@ -608,13 +626,21 @@ void setup_anchor(struct udf_disc *disc)
 	mlen = ext->blocks * disc->blocksize;
 
 	ext = next_extent(disc->head, RVDS);
-	if (!ext)
+	if (!ext && disc->blocks > 257)
 	{
 		fprintf(stderr, "%s: Error: Not enough blocks on device\n", appname);
 		exit(1);
 	}
-	rloc = ext->start;
-	rlen = ext->blocks * disc->blocksize;
+	if (disc->blocks > 257)
+	{
+		rloc = ext->start;
+		rlen = ext->blocks * disc->blocksize;
+	}
+	else
+	{
+		rloc = mloc;
+		rlen = mlen;
+	}
 
 	ext = next_extent(disc->head, ANCHOR);
 	if (!ext)
@@ -664,12 +690,15 @@ int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offse
 	struct udf_desc *desc;
 	struct partitionHeaderDesc *phd = (struct partitionHeaderDesc *)disc->udf_pd[0]->partitionContentsUse;
 	uint32_t length = (sizeof(struct spaceBitmapDesc) + (pspace->blocks+7)/8 + disc->blocksize-1) / disc->blocksize * disc->blocksize;
+	uint32_t value;
+
+	memcpy(&value, &disc->udf_lvid->data[sizeof(uint32_t)*0], sizeof(value));
 
 	if (disc->flags & FLAG_FREED_BITMAP)
 	{
 		phd->freedSpaceBitmap.extPosition = cpu_to_le32(offset);
 		phd->freedSpaceBitmap.extLength = cpu_to_le32(length);
-		disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - (length / disc->blocksize));
+		value = cpu_to_le32(le32_to_cpu(value) - (length / disc->blocksize));
 	}
 	else if (disc->flags & FLAG_FREED_TABLE)
 	{
@@ -677,19 +706,19 @@ int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offse
 		if (disc->flags & FLAG_STRATEGY4096)
 		{
 			phd->freedSpaceTable.extLength = cpu_to_le32(disc->blocksize * 2);
-			disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - 2);
+			value = cpu_to_le32(le32_to_cpu(value) - 2);
 		}
 		else
 		{
 			phd->freedSpaceTable.extLength = cpu_to_le32(disc->blocksize);
-			disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - 1);
+			value = cpu_to_le32(le32_to_cpu(value) - 1);
 		}
 	}
 	else if (disc->flags & FLAG_UNALLOC_BITMAP)
 	{
 		phd->unallocSpaceBitmap.extPosition = cpu_to_le32(offset);
 		phd->unallocSpaceBitmap.extLength = cpu_to_le32(length);
-		disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - (length / disc->blocksize));
+		value = cpu_to_le32(le32_to_cpu(value) - (length / disc->blocksize));
 	}
 	else if (disc->flags & FLAG_UNALLOC_TABLE)
 	{
@@ -697,14 +726,16 @@ int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offse
 		if (disc->flags & FLAG_STRATEGY4096)
 		{
 			phd->unallocSpaceTable.extLength = cpu_to_le32(disc->blocksize * 2);
-			disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - 2);
+			value = cpu_to_le32(le32_to_cpu(value) - 2);
 		}
 		else
 		{
 			phd->unallocSpaceTable.extLength = cpu_to_le32(disc->blocksize);
-			disc->udf_lvid->freeSpaceTable[0] = cpu_to_le32(le32_to_cpu(disc->udf_lvid->freeSpaceTable[0]) - 1);
+			value = cpu_to_le32(le32_to_cpu(value) - 1);
 		}
 	}
+
+	memcpy(&disc->udf_lvid->data[sizeof(uint32_t)*0], &value, sizeof(value));
 
 	if (disc->flags & FLAG_SPACE_BITMAP)
 	{
@@ -720,7 +751,7 @@ int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offse
 		if (pspace->blocks%8)
 			sbd->bitmap[nBytes-1] = 0xFF >> (8-(pspace->blocks%8));
 		clear_bits(sbd->bitmap, offset, (length + disc->blocksize - 1) / disc->blocksize);
-		sbd->descTag = udf_query_tag(disc, TAG_IDENT_SBD, 1, desc->offset, desc->data, sizeof(struct spaceBitmapDesc));
+		sbd->descTag = udf_query_tag(disc, TAG_IDENT_SBD, 1, desc->offset, desc->data, 0, sizeof(struct spaceBitmapDesc));
 	}
 	else if (disc->flags & FLAG_SPACE_TABLE)
 	{
@@ -776,7 +807,7 @@ int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offse
 		use->icbTag.parentICBLocation.partitionReferenceNum = cpu_to_le16(0);
 		use->icbTag.fileType = ICBTAG_FILE_TYPE_USE;
 		use->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_SHORT);
-		use->descTag = udf_query_tag(disc, TAG_IDENT_USE, 1, desc->offset, desc->data, sizeof(struct unallocSpaceEntry) + le32_to_cpu(use->lengthAllocDescs));
+		use->descTag = udf_query_tag(disc, TAG_IDENT_USE, 1, desc->offset, desc->data, 0, sizeof(struct unallocSpaceEntry) + le32_to_cpu(use->lengthAllocDescs));
 
 		if (disc->flags & FLAG_STRATEGY4096)
 		{
@@ -971,7 +1002,7 @@ void setup_vds(struct udf_disc *disc)
 	stable[0] = next_extent(disc->head, STABLE);
 	sspace = next_extent(disc->head, SSPACE);
 
-	if (!mvds || !rvds || !lvid)
+	if (!mvds || (!rvds && disc->blocks > 257) || !lvid)
 	{
 		fprintf(stderr, "%s: Error: Not enough blocks on device\n", appname);
 		exit(1);
@@ -993,8 +1024,7 @@ void setup_vds(struct udf_disc *disc)
 	setup_pd(disc, mvds, rvds, 2);
 	setup_usd(disc, mvds, rvds, 3);
 	setup_iuvd(disc, mvds, rvds, 4);
-	if (mvds->blocks > 5)
-		setup_td(disc, mvds, rvds, 5);
+	setup_td(disc, mvds, rvds, 5);
 }
 
 void setup_pvd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent *rvds, uint32_t offset)
@@ -1007,6 +1037,8 @@ void setup_pvd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent
 	desc->data->buffer = disc->udf_pvd[0];
 	disc->udf_pvd[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_PVD, offset, length, NULL);
 	memcpy(disc->udf_pvd[1] = desc->data->buffer, disc->udf_pvd[0], length);
 	disc->udf_pvd[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1026,6 +1058,8 @@ void setup_lvd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent
 	desc->data->buffer = disc->udf_lvd[0];
 	disc->udf_lvd[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_LVD, offset, length, NULL);
 	memcpy(disc->udf_lvd[1] = desc->data->buffer, disc->udf_lvd[0], length);
 	disc->udf_lvd[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1057,6 +1091,8 @@ void setup_pd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent 
 	desc->data->buffer = disc->udf_pd[0];
 	disc->udf_pd[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_PD, offset, length, NULL);
 	memcpy(disc->udf_pd[1] = desc->data->buffer, disc->udf_pd[0], length);
 	disc->udf_pd[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1086,6 +1122,8 @@ void setup_usd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent
 	desc->data->buffer = disc->udf_usd[0];
 	disc->udf_usd[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_USD, offset, length, NULL);
 	memcpy(disc->udf_usd[1] = desc->data->buffer, disc->udf_usd[0], length);
 	disc->udf_usd[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1103,6 +1141,8 @@ void setup_iuvd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_exten
 	desc->data->buffer = disc->udf_iuvd[0];
 	disc->udf_iuvd[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_IUVD, offset, length, NULL);
 	memcpy(disc->udf_iuvd[1] = desc->data->buffer, disc->udf_iuvd[0], length);
 	disc->udf_iuvd[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1118,6 +1158,8 @@ void setup_td(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent 
 	desc->data->buffer = disc->udf_td[0];
 	disc->udf_td[0]->descTag = query_tag(disc, mvds, desc, 1);
 
+	if (!rvds)
+		return;
 	desc = set_desc(rvds, TAG_IDENT_TD, offset, length, NULL);
 	memcpy(disc->udf_td[1] = desc->data->buffer, disc->udf_td[0], length);
 	disc->udf_td[1]->descTag = query_tag(disc, rvds, desc, 1);
@@ -1211,21 +1253,32 @@ void setup_stable(struct udf_disc *disc, struct udf_extent *stable[4], struct ud
 
 void setup_vat(struct udf_disc *disc, struct udf_extent *pspace)
 {
-	uint32_t offset = 0;
+	uint32_t offset;
 	struct udf_extent *anchor;
 	struct udf_desc *vtable;
 	struct udf_data *data;
-	uint32_t len;
+	uint32_t len, i;
 	struct virtualAllocationTable15 *vat15;
 	struct virtualAllocationTable20 *vat20;
+	struct impUseExtAttr *ea_attr;
+	struct LVExtensionEA *ea_lv;
+	uint8_t buffer[(sizeof(*ea_attr)+sizeof(*ea_lv)+3)/4*4];
+	uint16_t checksum;
 	uint16_t udf_rev_le16;
+	uint32_t min_blocks;
+	uint32_t align;
+
+	/* Put VAT to the last sector correctly aligned */
+	align = disc->sizing[PSPACE_SIZE].align;
+	offset = pspace->tail->offset + (pspace->tail->length + disc->blocksize-1) / disc->blocksize;
+	offset = (offset + align) / align * align - 1;
 
 	if (disc->flags & FLAG_MIN_300_BLOCKS)
 	{
-		// On optical discs one track has minimal size of 300 sectors, so put VAT to the last sector
-		offset = pspace->tail->offset + (pspace->tail->length + disc->blocksize-1) / disc->blocksize;
-		if (pspace->start + offset < 299)
-			offset = 299 - pspace->start;
+		// On optical TAO discs one track has minimal size of 300 sectors
+		min_blocks = (300 + align) / align * align - 1;
+		if (pspace->start + offset < min_blocks)
+			offset = min_blocks - pspace->start;
 	}
 
 	if (disc->flags & FLAG_CLOSED)
@@ -1260,12 +1313,41 @@ void setup_vat(struct udf_disc *disc, struct udf_extent *pspace)
 	{
 		vtable = udf_create(disc, pspace, (const dchars *)"\x08" UDF_ID_ALLOC, strlen(UDF_ID_ALLOC)+1, offset, NULL, FID_FILE_CHAR_HIDDEN, ICBTAG_FILE_TYPE_UNDEF, 0);
 		disc->vat_entries--; // Remove VAT file itself from VAT table
+		udf_rev_le16 = cpu_to_le16(disc->udf_rev);
+		memset(&buffer, 0, sizeof(buffer));
+		ea_attr = (struct impUseExtAttr *)buffer;
+		ea_attr->attrType = cpu_to_le32(EXTATTR_IMP_USE);
+		ea_attr->attrSubtype = EXTATTR_SUBTYPE;
+		ea_attr->attrLength = cpu_to_le32(sizeof(buffer));
+		ea_attr->impUseLength = cpu_to_le32(sizeof(*ea_lv));
+		ea_attr->impIdent.identSuffix[2] = UDF_OS_CLASS_UNIX;
+		ea_attr->impIdent.identSuffix[3] = UDF_OS_ID_LINUX;
+		memcpy(ea_attr->impIdent.identSuffix, &udf_rev_le16, sizeof(udf_rev_le16));
+		strcpy((char *)ea_attr->impIdent.ident, UDF_ID_VAT_LVEXTENSION);
+		ea_lv = (struct LVExtensionEA *)&ea_attr->impUse[0];
+		checksum = 0;
+		for (i = 0; i < sizeof(*ea_attr); ++i)
+			checksum += ((uint8_t *)ea_attr)[i];
+		ea_lv->headerChecksum = cpu_to_le16(checksum);
+		if (disc->flags & FLAG_EFE)
+		{
+			struct extendedFileEntry *efe = (struct extendedFileEntry *)vtable->data->buffer;
+			ea_lv->verificationID = efe->uniqueID;
+		}
+		else
+		{
+			struct fileEntry *fe = (struct fileEntry *)vtable->data->buffer;
+			ea_lv->verificationID = fe->uniqueID;
+		}
+		ea_lv->numFiles = query_lvidiu(disc)->numFiles;
+		ea_lv->numDirs = query_lvidiu(disc)->numDirs;
+		memcpy(ea_lv->logicalVolIdent, disc->udf_lvd[0]->logicalVolIdent, 128);
+		insert_ea(disc, vtable, (struct genericFormat *)buffer, sizeof(buffer));
 		len = sizeof(struct virtualAllocationTable15);
 		data = alloc_data(disc->vat, disc->vat_entries * sizeof(uint32_t));
 		insert_data(disc, pspace, vtable, data);
 		data = alloc_data(&default_vat15, len);
 		vat15 = data->buffer;
-		udf_rev_le16 = cpu_to_le16(disc->udf_rev);
 		memcpy(vat15->vatIdent.identSuffix, &udf_rev_le16, sizeof(udf_rev_le16));
 		insert_data(disc, pspace, vtable, data);
 	}
@@ -1298,11 +1380,11 @@ void add_type1_partition(struct udf_disc *disc, uint16_t partitionNum)
 		sizeof(struct logicalVolIntegrityDesc) +
 		sizeof(uint32_t) * 2 * (npm + 1) +
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * 2 * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * 2 * npm],
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * npm],
 		sizeof(uint32_t));
 }
 
@@ -1335,11 +1417,11 @@ void add_type2_sparable_partition(struct udf_disc *disc, uint16_t partitionNum, 
 		sizeof(struct logicalVolIntegrityDesc) +
 		sizeof(uint32_t) * 2 * (npm + 1) +
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * 2 * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * 2 * npm],
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * npm],
 		sizeof(uint32_t));
 }
 
@@ -1395,11 +1477,11 @@ void add_type2_virtual_partition(struct udf_disc *disc, uint16_t partitionNum)
 		sizeof(struct logicalVolIntegrityDesc) +
 		sizeof(uint32_t) * 2 * (npm + 1) +
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * 2 * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * 2 * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * 2 * npm],
 		sizeof(struct logicalVolIntegrityDescImpUse));
-	memmove(&disc->udf_lvid->impUse[sizeof(uint32_t) * (npm + 1)],
-		&disc->udf_lvid->impUse[sizeof(uint32_t) * npm],
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * npm],
 		sizeof(uint32_t));
 }
 
