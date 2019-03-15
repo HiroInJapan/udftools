@@ -139,6 +139,8 @@ void logger(message_type type, char *color, const char *format, va_list arg) {
 	}
 
     if(verbosity >= verblvl) {
+        if (stream == stderr)
+            fflush(stdout);
         if(color == NULL || colored == 0)
             color = "";
         if(prefix != NULL)
@@ -148,6 +150,8 @@ void logger(message_type type, char *color, const char *format, va_list arg) {
         vfprintf (stream, format, arg);
         if(colored == 1)
             fprintf(stream, ANSI_COLOR_RESET EOL);
+        if (stream == stderr)
+            fflush(stderr);
     }
 }
 
