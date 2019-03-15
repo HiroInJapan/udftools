@@ -18,6 +18,7 @@
 
 #include "config.h"
 
+#include <ctype.h>  // isxdigit()
 #include <math.h>
 #include <time.h>
 #include <limits.h>
@@ -1290,7 +1291,7 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
     decode_string(NULL, disc->udf_pvd[vds]->volSetIdent, namebuf, 128, 128*2);
 
     for(int i=0; i<16; i++) {
-        if((namebuf[i] >= '0' && namebuf[i]<='9') || (namebuf[i] >= 'a' && namebuf[i] <= 'z')) {
+        if(isxdigit(namebuf[i])) {
             continue; 
         } else {
             warn("Volume Set Identifier Unique Identifier is not compliant.\n");
