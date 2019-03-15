@@ -89,7 +89,7 @@ struct filesystemStats {
     uint8_t * actPartitionBitmap;
     uint8_t * expPartitionBitmap;
     timestamp LVIDtimestamp;
-    dstring * partitionIdent;
+    char * partitionIdent;
     char * volumeSetIdent;
     uint8_t dstringFSDLogVolIdentErr;
     uint8_t dstringFSDFileSetIdentErr;

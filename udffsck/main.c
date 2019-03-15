@@ -705,6 +705,7 @@ int main(int argc, char *argv[]) {
     free(seq);
     free(stats.actPartitionBitmap);
     free(stats.volumeSetIdent);
+    free(stats.partitionIdent);
 
     flock(fd, LOCK_UN);
     close(fd);

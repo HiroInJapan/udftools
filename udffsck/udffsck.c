@@ -1287,7 +1287,7 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
     }
     char *namebuf = calloc(1,128*2);
     memset(namebuf, 0, 128*2);
-    decode_string(disc, disc->udf_pvd[vds]->volSetIdent, namebuf, 128, 128*2);
+    decode_string(NULL, disc->udf_pvd[vds]->volSetIdent, namebuf, 128, 128*2);
 
     for(int i=0; i<16; i++) {
         if((namebuf[i] >= '0' && namebuf[i]<='9') || (namebuf[i] >= 'a' && namebuf[i] <= 'z')) {
@@ -1302,7 +1302,7 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
     }
 
     stats->volumeSetIdent = namebuf;
-    stats->partitionIdent = disc->udf_fsd->logicalVolIdent;
+//  stats->partitionIdent is now set in get_fsd()
     return 0;
 }
 
@@ -1456,7 +1456,26 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
         unmap_chunk(dev, chunk, devsize);
         return 8;
     }
-    dbg("LogicVolIdent: %s\nFileSetIdent: %s\n", (disc->udf_fsd->logicalVolIdent), (disc->udf_fsd->fileSetIdent));
+
+    size_t ident_max_size = sizeof(disc->udf_fsd->logicalVolIdent);
+    stats->partitionIdent = calloc(2, ident_max_size);
+    if (stats->partitionIdent) {
+        decode_string(NULL, disc->udf_fsd->logicalVolIdent, stats->partitionIdent,
+                      ident_max_size, 2*ident_max_size);
+        dbg("LogicVolIdent: %s\n", stats->partitionIdent);
+    }
+
+    if (verbosity >= DBG) {
+        ident_max_size = sizeof(disc->udf_fsd->fileSetIdent);
+        char *identbuf = calloc(2, ident_max_size);
+        if (identbuf) {
+            memset(identbuf, 0, 2*ident_max_size);
+            decode_string(NULL, disc->udf_fsd->fileSetIdent, identbuf,
+                          ident_max_size, 2*ident_max_size);
+            dbg("FileSetIdent:  %s\n", identbuf);
+            free(identbuf);
+        }
+    }
 
     increment_used_space(stats, filesetlen, lap->extLocation.logicalBlockNum);
 
