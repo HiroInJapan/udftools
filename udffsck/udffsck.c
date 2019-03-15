@@ -662,17 +662,17 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
  * \return 1 -- UDF not detected 
  */
 int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize) {
-    struct volStructDesc vsd;
-    struct beginningExtendedAreaDesc bea;
-    struct volStructDesc nsr;
-    struct terminatingExtendedAreaDesc tea;
-    int ssize = 512;
+    const struct volStructDesc *vsd = NULL;
+    const struct beginningExtendedAreaDesc *bea = NULL;
+    const struct volStructDesc *nsr = NULL;
+    const struct terminatingExtendedAreaDesc *tea = NULL;
+    int ssize = BLOCK_SIZE;  // No point in attempting smaller sizes here
     int notFound = 0;
     int foundBEA = 0;
     uint32_t chunk = 0;
     uint32_t chunksize = CHUNK_SIZE;
 
-    for(int it=0; it<5; it++, ssize *= 2) {
+    for(int it=0; it<2; it++, ssize *= 2) {
         if(force_sectorsize) {
             ssize = *sectorsize;
             it = INT_MAX - 1; //End after this iteration
@@ -682,46 +682,47 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_s
         dbg("Try sectorsize %d\n", MIN(ssize, BLOCK_SIZE));
 
         for(int i = 0; i<6; i++) {
-            chunk = (16 * BLOCK_SIZE + i*MIN(ssize, BLOCK_SIZE)) / chunksize; 
+            uint32_t byte_offset = 16 * BLOCK_SIZE + i*MAX(ssize, BLOCK_SIZE);
+            chunk =  byte_offset / chunksize;
             map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
-            dbg("try #%d at address 0x%x, chunk %u, chunk address: 0x%x\n", i, 16*BLOCK_SIZE+i*MIN(ssize, BLOCK_SIZE), chunk, (16*BLOCK_SIZE+i*MIN(ssize, BLOCK_SIZE))%chunksize);
+            dbg("try #%d at address 0x%x, chunk %u, chunk address: 0x%x\n", i, byte_offset, chunk,
+                byte_offset %chunksize);
 #ifdef MEMTRACE
             dbg("Chunk pointer: %p\n", dev[chunk]);
 #endif
-            memcpy(&vsd, dev[chunk]+(16*BLOCK_SIZE+i*MIN(ssize, BLOCK_SIZE))%chunksize, sizeof(vsd));
-            dbg("vsd: type:%u, id:%s, v:%u\n", vsd.structType, vsd.stdIdent, vsd.structVersion);
+            vsd = (const struct volStructDesc *)(dev[chunk] + (byte_offset %chunksize));
+            dbg("vsd: type:%u, id:%.5s, v:%u\n", vsd->structType, vsd->stdIdent, vsd->structVersion);
 
-            if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_BEA01, 5)) {
+            if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_BEA01, 5)) {
                 //It's Extended area descriptor, so it might be UDF, check next sector
-                memcpy(&bea, &vsd, sizeof(bea)); // store it for later
+                bea = (const struct beginningExtendedAreaDesc *) vsd; // store it for later
                 foundBEA = 1; 
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_BOOT2, 5)) {
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_BOOT2, 5)) {
                 err("BOOT2 found, unsuported for now.\n");
                 unmap_chunk(dev, chunk, devsize);
                 return -1;
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_CD001, 5)) { 
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_CD001, 5)) {
                 //CD001 means there is ISO9660, we try search for UDF at sector 18
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_CDW02, 5)) {
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_CDW02, 5)) {
                 err("CDW02 found, unsuported for now.\n");
                 unmap_chunk(dev, chunk, devsize);
                 return -1;
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_NSR02, 5)) {
-                memcpy(&nsr, &vsd, sizeof(nsr));
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_NSR03, 5)) {
-                memcpy(&nsr, &vsd, sizeof(nsr));
-            } else if(!strncmp((char *)vsd.stdIdent, VSD_STD_ID_TEA01, 5)) {
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_NSR02, 5)) {
+                nsr = vsd;
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_NSR03, 5)) {
+                nsr = vsd;
+            } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_TEA01, 5)) {
                 //We found TEA01, so we can end recognition sequence
-                memcpy(&tea, &vsd, sizeof(tea));
-                unmap_chunk(dev, chunk, devsize);
+                tea = (const struct terminatingExtendedAreaDesc *) vsd;
                 break;
-            } else if(vsd.stdIdent[0] == '\0') {
+            } else if(vsd->stdIdent[0] == '\0') {
                 if(foundBEA) {
                     continue;
                 }
                 notFound = 1;
                 break;
             } else {
-                err("Unknown identifier: %s. Exiting\n", vsd.stdIdent);
+                err("Unknown identifier: %.5s. Exiting\n", vsd->stdIdent);
                 notFound = 1;
                 break;
             }  
@@ -732,11 +733,25 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_s
             continue;
         }
 
-        dbg("bea: type:%u, id:%s, v:%u\n", bea.structType, bea.stdIdent, bea.structVersion);
-        dbg("nsr: type:%u, id:%s, v:%u\n", nsr.structType, nsr.stdIdent, nsr.structVersion);
-        dbg("tea: type:%u, id:%s, v:%u\n", tea.structType, tea.stdIdent, tea.structVersion);
+        if (bea)
+            dbg("bea: type:%u, id:%.5s, v:%u\n", bea->structType, bea->stdIdent, bea->structVersion);
+        else
+            err("bea: not found\n");
 
-        *sectorsize = ssize;
+        if (nsr)
+            dbg("nsr: type:%u, id:%.5s, v:%u\n", nsr->structType, nsr->stdIdent, nsr->structVersion);
+        else
+            err("nsr: not found\n");
+
+        if (tea)
+            dbg("tea: type:%u, id:%.5s, v:%u\n", tea->structType, tea->stdIdent, tea->structVersion);
+        else
+            err("tea: not found\n");
+
+        // Sector size determination is conclusive only when sectors are larger
+        // than Volume Structure Descriptors
+        if (ssize > BLOCK_SIZE)
+            *sectorsize = ssize;
         unmap_chunk(dev, chunk, devsize);
         return 0;
     }
