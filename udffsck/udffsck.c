@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2017 Vojtech Vladyka <vojtech.vladyka@gmail.com>
+ * Copyright (C) 2019 Steven J. Magnani <magnani@ieee.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1501,20 +1502,20 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
 }
 
 /**
- * \brief Inspect AED and return array of its allocation descriptors
- *
- * This function returns pointer to array of allocation descriptors. This pointer points to memory mapped device!
+ * \brief Inspect AED and append its allocation descriptors to an expanded version
+ * of the specified array.
  *
  * \param[in] *dev memory mapped device
  * \param[in] devsize size of whole device in bytes
  * \param[in] lsnBase LBN offset to LSN
  * \param[in] aedlbn LBN of AED
- * \param[out] *lengthADArray size of allocation descriptor array ADArray
- * \param[out] **ADAarray allocation descriptors array itself
+ * \param[in,out] *lengthADArray size of allocation descriptor array ADArray
+ * \param[in,out] **ADAarray allocation descriptors array itself (heap memory)
  * \param[in] *stats file system status
  * \param[out] status error status
  *
  * \return 0 -- AED found and ADArray is set
+ * \return 2 -- Heap allocation failed
  * \return 4 -- AED not found
  * \return 4 -- checksum failed
  * \return 4 -- CRC failed
@@ -1560,9 +1561,15 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
             *status |= 4;
         }
 
-        lad = aed->lengthAllocDescs;
-        *ADArray = (uint8_t *)(aed)+sizeof(struct allocExtDesc);
-        *lengthADArray = lad;
+        uint32_t lad = aed->lengthAllocDescs;
+        uint8_t *newADArray = realloc(*ADArray, *lengthADArray + lad);
+        if (!newADArray) {
+            err("AED realloc failed\n");
+            return 2;
+        }
+        memcpy(newADArray + *lengthADArray, (uint8_t *)(aed)+sizeof(struct allocExtDesc), lad);
+        *ADArray = newADArray;
+        *lengthADArray += lad;
 #if 0  //For debug purposes only
         uint32_t line = 0;
         dbg("AED Array\n");
@@ -1587,11 +1594,10 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
 }
 
 /**
- * \brief FID allocation descriptor position translation function
+ * \brief Parse the contents of a directory given the allocation descriptors within its FE/EFE.
  *
- * FID's allocation descriptors are stored at Allocation Descriptors area of FE. Problem is, this area is not
- * necessarily in one piece and can be splitted, even in middle of descriptor. This function creates virtual
- * linear area for futher processing.
+ * Note, the contents can be split across extents, even in the middle of a file information descriptor.
+ * This function creates a virtual linear area for further processing.
  *
  * This function internally calls inspect_fid().
  *
@@ -1600,9 +1606,9 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
  * \param[in] devsize size of whole device in bytes
  * \param[in] lbnlsn LBN offset against LSN
  * \param[in] lsn actual LSN
- * \param[in] *allocDescs pointer to allocation descriptors area
- * \param[in] lengthAllocDescs length of allocation descriptors area
- * \param[in] icb_ad type od AD
+ * \param[in] *allocDescs allocation descriptors for the directory contents, in FE/EFE
+ * \param[in] lengthAllocDescs length of allocation descriptors area in bytes
+ * \param[in] icb_ad type of AD
  * \param[in] *stats file system status
  * \param[in] depth depth of FE for printing
  * \param[in] *seq VDS sequence
@@ -1610,20 +1616,19 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
  *
  * \return 0 -- everything OK
  * \return 1 -- Unsupported AD
- * \return 2 -- FID array allocation failed
+ * \return 2 -- Heap allocation failed
  * \return 255 -- inspect_aed() failed
  */
-static uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
-                             uint32_t lbnlsn, uint32_t lsn, uint8_t *allocDescs,
-                             uint32_t lengthAllocDescs, uint16_t icb_ad,
-                             struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
-                             uint8_t *status) {
+static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
+                              uint32_t lbnlsn, uint32_t lsn, uint8_t *allocDescs,
+                              uint32_t lengthAllocDescs, uint16_t icb_ad,
+                              struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
+                              uint8_t *status) {
 
     uint32_t descSize = 0;
-    uint8_t *fidArray = NULL;
+    uint8_t *dirContent = NULL;
     int nAD = 0;
-    uint32_t overallLength = 0;
-    uint32_t overallBodyLength = 0;
+    uint64_t dirContentLen = 0;
     short_ad *sad = NULL;
     long_ad *lad = NULL;
     ext_ad *ead = NULL;
@@ -1653,222 +1658,192 @@ static uint8_t translate_fid(int fd, uint8_t **dev, const struct udf_disc *disc,
 
     nAD = lengthAllocDescs/descSize;
 
-#if 0 // For debug purposes only
-    uint32_t line = 0;
-    dbg("FID Alloc Array\n");
-    for(int i=0; i<lengthAllocDescs; ) {
-        note("[%04u] ",line++);
-        for(int j=0; j<8; j++, i++) {
-            note("%02x ", allocDescs[i]);
-        }
-        note("\n");
-    }
-#endif
+    // Collect all of the ICB's allocation descriptors into a single array
+    uint32_t lengthADArray = lengthAllocDescs;
+    uint8_t *ADArray = malloc(lengthAllocDescs);
 
-    uint32_t lengthADArray = 0;
-    uint8_t *ADArray = NULL;
+    if (!ADArray) {
+        err("Dir content allocation failed.\n");
+        return 2;
+    }
+
+    memcpy(ADArray, allocDescs, lengthAllocDescs);
 
     for(int i = 0; i < nAD; i++) {
         uint32_t aedlbn = 0;
-        sad = (short_ad *)(allocDescs + i*descSize); //we can do that, beause all ADs have size as first.
-        overallLength += sad->extLength & 0x3FFFFFFF; //lower 30 bits are unsiged length
-        overallBodyLength += lbSize;
-        dbg("ExtLength: %u, type: %u\n", sad->extLength & 0x3FFFFFFF, sad->extLength>>30);
-        if(sad->extLength>>30 == 3) { //Extent is AED
+        sad = (short_ad *)(ADArray + i*descSize); //we can do that, because all ADs have size as first.
+
+        // ECMA 167r3 sec. 12: AD with zero extent length terminates the sequence
+        if (!(sad->extLength & 0x3FFFFFFF)) {
+            // @todo Something if i != (nAD - 1).
+            // Not so easy with current implementation because we've tossed the lbn (AED or FE or EFE)
+            // (easy enough to fix) and don't have the nAD from that block
+            break;
+        }
+        uint32_t extType = sad->extLength >> 30;
+        if (extType != 3)
+            dirContentLen += sad->extLength & 0x3FFFFFFF;
+
+        dbg("ExtLength: %u, type: %u\n", sad->extLength & 0x3FFFFFFF, extType);
+        if(extType == 3) { //Extent is AED
             switch(icb_ad) {
                 case ICBTAG_FLAG_AD_SHORT:
                     //we already have sad
                     aedlbn = sad->extPosition;
                     break;
                 case ICBTAG_FLAG_AD_LONG:
-                    lad = (long_ad *)(allocDescs + i*descSize);
+                    lad = (long_ad *)(ADArray + i*descSize);
                     aedlbn = lad->extLocation.logicalBlockNum;
                     break;
                 case ICBTAG_FLAG_AD_EXTENDED:
-                    ead = (ext_ad *)(allocDescs + i*descSize);
+                    ead = (ext_ad *)(ADArray + i*descSize);
                     aedlbn = ead->extLocation.logicalBlockNum;
                     break;
             }
+            // Erase the chain entry just in case the chained AED has zero entries
+            memset(ADArray + i*descSize, 0, descSize);
+
+            lengthADArray -= descSize;  // Force this (chain) entry to be overwritten
             if(inspect_aed(fd, dev, devsize, lsnBase, aedlbn, &lengthADArray, &ADArray, stats, status)) {
                 err("AED inspection failed.\n");
                 return -1;
             }
-#if 1
-            dbg("FID Alloc Array after AED\n");
-#ifdef MEMTRACE
-            dbg("ADArray ptr: %p\n", ADArray);
-#endif
-            dbg("lengthADArray: %u\n", lengthADArray);
-#endif
-#if 0       //For debug purposes only
-            for(int i=0; i<lengthADArray; ) {
-                note("[%04u] ",line++);
-                for(int j=0; j<descSize; j++, i++) {
-                    note("%02x ", ADArray[i]);
-                }
-                note("\n");
-            }
-#endif
-            nAD += lengthADArray/descSize;
-            overallBodyLength += lengthADArray;
-            overallLength += lengthADArray;         
-        }
+
+            nAD = (lengthADArray / descSize);
+
+            // Force rescan of the current ADArray entry.
+            // It has changed from a chain to the next AED
+            // to the first AD in that next AED.
+            --i;
+        }  // AED extent
     }
 
-    dbg("Overall length: %u\n", overallLength);
-    fidArray = calloc(1, overallBodyLength);
-    if(fidArray == NULL) {
-        err("FID array allocatiob failed.\n");
+    dbg("Dir content length: %u\n", dirContentLen);
+    dbg("nAD: %u\n", nAD);
+
+    // Now read the entire directory contents into a contiguous array
+
+    dirContent = calloc(1, dirContentLen);
+    if(dirContent == NULL) {
+        err("Dir content allocation failed.\n");
         return 2;
     }
 
     uint32_t prevExtLength = 0;
-    uint8_t aed = 0;
     for(int i = 0; i < nAD; i++) {
+        uint32_t extStartLBN;
+        uint32_t extType;
+        uint32_t extLength;
         switch(icb_ad) {
             case ICBTAG_FLAG_AD_SHORT:
-                if(aed) {
-                    sad = (short_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                } else {
-                    sad = (short_ad *)(allocDescs + i*descSize);
-                }
-                if(sad->extLength >> 30 == 3) { //Extent is AED
-                    aed = 1;   
-                    continue;     
-                }
-                position = (lsnBase + sad->extPosition) * (uint64_t) lbSize;
-                chunk  = (uint32_t)(position / chunksize);
-                offset = (uint32_t)(position % chunksize);
-                dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
-
-                memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), sad->extLength);
-                increment_used_space(stats, 1, sad->extPosition);
-                prevExtLength += sad->extLength;
+                sad = (short_ad *)(ADArray + i*descSize);
+                extType     = sad->extLength >> 30;
+                extLength   = sad->extLength & 0x3FFFFFFF;
+                extStartLBN = sad->extPosition;
                 break;
+
             case ICBTAG_FLAG_AD_LONG:
-                if(aed) {
-                    lad = (long_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                } else {
-                    lad = (long_ad *)(allocDescs + i*descSize);
-                }
-                if(lad->extLength >> 30 == 3) { //Extent is AED
-                    aed = 1;   
-                    continue;     
-                }
-                position = (lsnBase + lad->extLocation.logicalBlockNum) * (uint64_t) lbSize;
-                chunk  = (uint32_t)(position / chunksize);
-                offset = (uint32_t)(position % chunksize);
-                dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
-
-                memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), lad->extLength);
-                increment_used_space(stats, 1, lad->extLocation.logicalBlockNum);
-                prevExtLength += lad->extLength;
+                lad = (long_ad *)(ADArray + i*descSize);
+                extType     = lad->extLength >> 30;
+                extLength   = lad->extLength & 0x3FFFFFFF;
+                extStartLBN = lad->extLocation.logicalBlockNum;
                 break;
-            case ICBTAG_FLAG_AD_EXTENDED:
-                if(aed) {
-                    ead = (ext_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                } else {
-                    ead = (ext_ad *)(allocDescs + i*descSize);
-                }
-                if(ead->extLength >> 30 == 3) { //Extent is AED
-                    aed = 1;   
-                    continue;     
-                }
-                position = (lsnBase + ead->extLocation.logicalBlockNum) * (uint64_t) lbSize;
-                chunk  = (uint32_t)(position / chunksize);
-                offset = (uint32_t)(position % chunksize);
-                dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
-                memcpy(fidArray+prevExtLength, (uint8_t *)(dev[chunk]+offset), ead->extLength);
-                increment_used_space(stats, 1, ead->extLocation.logicalBlockNum);
-                prevExtLength += ead->extLength;
+            case ICBTAG_FLAG_AD_EXTENDED:
+                ead = (ext_ad *)(ADArray + i*descSize);
+                extType     = ead->extLength >> 30;
+                extLength   = ead->extLength & 0x3FFFFFFF;
+                extStartLBN = ead->extLocation.logicalBlockNum;
+                break;
+
+            default:
+                // @todo something
+                continue;
                 break;
         }
+
+        if (extType == 0) {
+            // Allocated and Recorded
+            position = (lsnBase + extStartLBN) * (uint64_t) lbSize;
+            chunk  = (uint32_t)(position / chunksize);
+            offset = (uint32_t)(position % chunksize);
+            dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
+            map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
+
+            memcpy(dirContent+prevExtLength, (uint8_t *)(dev[chunk]+offset), extLength);
+        } else {
+            // Not recorded
+            memset(dirContent+prevExtLength, 0, extLength);
+        }
+        if (extType != 2) {
+            // Allocated
+            increment_used_space(stats, 1, extStartLBN);
+        }
+        prevExtLength += extLength;
     }
 
     uint8_t tempStatus = 0;
     int counter = 0;
-    for(uint32_t pos=0; pos < overallLength; ) {
+    for(uint32_t pos=0; pos < dirContentLen; ) {
         dbg("FID #%d\n", counter++);
-        if(inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn, fidArray, &pos, stats, depth+1, seq, &tempStatus) != 0) {
+        if(inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn, dirContent, &pos, stats, depth+1, seq, &tempStatus) != 0) {
             dbg("1 FID inspection over.\n");
             break;
         }
     } 
     dbg("2 FID inspection over.\n");
 
-    aed = 0;
-    if(tempStatus & 0x01) { //Something was fixed - we need to copy back array
+    if(tempStatus & 0x01) { // FID(s) were fixed - write dirContent back out
         prevExtLength = 0;
         for(int i = 0; i < nAD; i++) {
+            uint32_t extStartLBN;
+            uint32_t extType;
+            uint32_t extLength;
             switch(icb_ad) {
                 case ICBTAG_FLAG_AD_SHORT:
-                    if(aed) {
-                        sad = (short_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                    } else {
-                        sad = (short_ad *)(allocDescs + i*descSize);
-                    }
-                    if(sad->extLength >> 30 == 3) { //Extent is AED
-                        aed = 1;   
-                        continue;     
-                    }
-                    position = (lsnBase + sad->extPosition) * (uint64_t) lbSize;
-                    chunk  = (uint32_t)(position / chunksize);
-                    offset = (uint32_t)(position % chunksize);
-                    dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
-
-                    memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, sad->extLength);
-                    prevExtLength += sad->extLength;
+                    sad = (short_ad *)(ADArray + i*descSize);
+                    extType     = sad->extLength >> 30;
+                    extLength   = sad->extLength & 0x3FFFFFFF;
+                    extStartLBN = sad->extPosition;
                     break;
+
                 case ICBTAG_FLAG_AD_LONG:
-                    if(aed) {
-                        lad = (long_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                    } else {
-                        lad = (long_ad *)(allocDescs + i*descSize);
-                    }
-                    if(lad->extLength >> 30 == 3) { //Extent is AED
-                        aed = 1;   
-                        continue;     
-                    }
-                    position = (lsnBase + lad->extLocation.logicalBlockNum) * (uint64_t) lbSize;
-                    chunk  = (uint32_t)(position / chunksize);
-                    offset = (uint32_t)(position % chunksize);
-                    dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
-
-                    memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, lad->extLength);
-                    prevExtLength += lad->extLength;
+                    lad = (long_ad *)(ADArray + i*descSize);
+                    extType     = lad->extLength >> 30;
+                    extLength   = lad->extLength & 0x3FFFFFFF;
+                    extStartLBN = lad->extLocation.logicalBlockNum;
                     break;
-                case ICBTAG_FLAG_AD_EXTENDED:
-                    if(aed) {
-                        ead = (ext_ad *)(ADArray + i*descSize - lengthAllocDescs);
-                    } else {
-                        ead = (ext_ad *)(allocDescs + i*descSize);
-                    }
-                    if(ead->extLength >> 30 == 3) { //Extent is AED
-                        aed = 1;   
-                        continue;     
-                    }
-                    position = (lsnBase + ead->extLocation.logicalBlockNum) * (uint64_t) lbSize;
-                    chunk  = (uint32_t)(position / chunksize);
-                    offset = (uint32_t)(position % chunksize);
-                    dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
-                    map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
-                    memcpy((uint8_t *)(dev[chunk]+offset), fidArray+prevExtLength, ead->extLength);
-                    prevExtLength += ead->extLength;
+                case ICBTAG_FLAG_AD_EXTENDED:
+                    ead = (ext_ad *)(ADArray + i*descSize);
+                    extType     = ead->extLength >> 30;
+                    extLength   = ead->extLength & 0x3FFFFFFF;
+                    extStartLBN = ead->extLocation.logicalBlockNum;
                     break;
             }
-        }     
-    }
 
-    dbg("3 FID inspection copyback done.\n");
-    //free array
-    free(fidArray);
+            if (extType == 0) {
+                // Allocated and Recorded
+                position = (lsnBase + extStartLBN) * (uint64_t) lbSize;
+                chunk  = (uint32_t)(position / chunksize);
+                offset = (uint32_t)(position % chunksize);
+                dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
+                map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
+
+                memcpy(dev[chunk]+offset, dirContent+prevExtLength, extLength);
+            }
+            // else @todo, depends how unrecorded extents were handled earlier
+
+            prevExtLength += extLength;
+        }   // for each extent of directory contents
+
+        dbg("3 directory copyback done.\n");
+    }  // if directory contents need writeback
+
+
+    //free arrays
+    free(dirContent);
+    free(ADArray);
     (*status) |= tempStatus;
     return 0;
 }
@@ -2445,7 +2420,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                                   ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
                 } else {
                     dbg("SHORT\n");
                     dbg("LAD: %u, N: %u, rest: %u\n", lad, lad/sizeof(short_ad), lad%sizeof(short_ad));
@@ -2467,7 +2443,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_LONG) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                                   ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
                 } else {
                     for(int si = 0; si < (int)(lad/sizeof(long_ad)); si++) {
                         dbg("LONG\n");
@@ -2487,7 +2464,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_EXTENDED) {
                 if(dir) {
                     fid_inspected = 1;
-                    translate_fid(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad, ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                                   ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
                 } else {
                     err("EAD found. Please report.\n");
                 }
