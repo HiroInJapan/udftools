@@ -2557,14 +2557,25 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     dirContent = fe->extendedAttrAndAllocDescs + fe->lengthExtendedAttr;
                     lengthAllocDescs = fe->lengthAllocDescs;
                 }
+
+                uint8_t tempStatus = 0;
                 for(uint32_t pos=0; pos < lengthAllocDescs; ) {
                     uint8_t failureCode = inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn,
                                                       dirContent, &pos, stats, depth+1, seq,
-                                                      &status);
+                                                      &tempStatus);
                     if(failureCode) {
+                        dbg("1 FID inspection over.\n");
                         break;
                     }
                 }
+                dbg("2 FID inspection over.\n");
+                if (tempStatus & 1) {
+                    // FID(s) were fixed - update FE/EFE CRC
+                    tag *descTag = &efe->descTag;  // same as &fe->descTag
+                    descTag->descCRC = udf_crc((uint8_t *)(descTag + 1),  descTag->descCRCLength, 0);
+                    descTag->tagChecksum = calculate_checksum(*descTag);
+                }
+                status |= tempStatus;
             }
             break;  
         default:
