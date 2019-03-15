@@ -35,7 +35,7 @@
 void read_tag(tag id) {
     note("\tIdentification Tag\n"
            "\t==================\n");
-    note("\tID: %d (", id.tagIdent);
+    note("\tID: %u (", id.tagIdent);
     switch(id.tagIdent) {
         case TAG_IDENT_PVD:
             note("PVD");
@@ -66,10 +66,10 @@ void read_tag(tag id) {
             break;
     }
     note(")\n");
-    note("\tVersion: %d\n", id.descVersion);
+    note("\tVersion: %u\n", id.descVersion);
     note("\tChecksum: 0x%x\n", id.tagChecksum);
     note("\tSerial Number: 0x%x\n", id.tagSerialNum);
-    note("\tDescriptor CRC: 0x%x, Length: %d\n", id.descCRC, id.descCRCLength);
+    note("\tDescriptor CRC: 0x%x, Length: %u\n", id.descCRC, id.descCRCLength);
     note("\tTag Location: 0x%x\n", id.tagLocation);
 }
 
@@ -106,7 +106,7 @@ int print_disc(struct udf_disc *disc) {
         note("[%d]\n", i);
         if(disc->udf_lvd[i] != 0) {
             read_tag(disc->udf_lvd[i]->descTag);
-            note("\tPartition Maps: %d\n",disc->udf_lvd[i]->partitionMaps[0]);
+            note("\tPartition Maps: %u\n",disc->udf_lvd[i]->partitionMaps[0]);
         }
     }
 
@@ -125,7 +125,7 @@ int print_disc(struct udf_disc *disc) {
         note("[%d]\n", i);
         if(disc->udf_usd[i] != 0) {
             read_tag(disc->udf_usd[i]->descTag);
-            note("\tNumOfAllocDescs: %d\n", disc->udf_usd[i]->numAllocDescs);
+            note("\tNumOfAllocDescs: %u\n", disc->udf_usd[i]->numAllocDescs);
         }
     }
 
@@ -159,7 +159,7 @@ void print_metadata_sequence(vds_sequence_t *seq) {
     note("Main             Reserve\n");
     note("ident | Errors | ident | Errors \n");     
     for(int i=0; i<VDS_STRUCT_AMOUNT; ++i) {
-        note("%5d |   0x%02x | %5d |   0x%02x \n", seq->main[i].tagIdent, seq->main[i].error, seq->reserve[i].tagIdent, seq->reserve[i].error);
+        note("%5u |   0x%02x | %5u |   0x%02x \n", seq->main[i].tagIdent, seq->main[i].error, seq->reserve[i].tagIdent, seq->reserve[i].error);
     }
 }
 
@@ -170,7 +170,7 @@ uint64_t map_size = 0;
 void *custom_malloc(size_t size, char * file, int line) {
     void *(*libc_malloc)(size_t) = dlsym(RTLD_NEXT, "malloc");
     void * ptr = libc_malloc(size);
-    dbg("[MEMTRACE] malloc %s:%d (%d) -> %p\n", file, line, size, ptr);
+    dbg("[MEMTRACE] malloc %s:%d (%zu) -> %p\n", file, line, size, ptr);
     return ptr;
 }
 
@@ -185,14 +185,14 @@ void *custom_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t 
     void *(*libc_mmap)(void *, size_t, int, int, int, off_t) = dlsym(RTLD_NEXT, "mmap");
     void * ptr = libc_mmap(addr, length, prot, flags, fd, offset);
     map_size += length;
-    dbg("[MEMTRACE] mmap %s:%d (%d) -> %p, Total: %ld\n", file, line, length, ptr, map_size);
+    dbg("[MEMTRACE] mmap %s:%d (%zu) -> %p, Total: %" PRIu64 "\n", file, line, length, ptr, map_size);
     return ptr;
 }
 
 int custom_munmap(void *addr, size_t length, char * file, int line) {
     int (*libc_munmap)(void*, size_t) = dlsym(RTLD_NEXT, "munmap");
     map_size -= length;
-    dbg("[MEMTRACE] munmap %s:%d %p -> (%d), Total: %ld\n", file, line, addr, length, map_size);
+    dbg("[MEMTRACE] munmap %s:%d %p -> (%zu), Total: %" PRIu64 "\n", file, line, addr, length, map_size);
     return libc_munmap(addr, length); 
 }
 #endif
@@ -206,7 +206,7 @@ void print_hex_array(void *ptr, size_t size) {
     uint32_t amount = 50000;
      
     for(int i=0+shift, k=0+shift; i<size && i < amount+shift; ) {
-        note("[%04d] ",line++);
+        note("[%04u] ",line++);
         for(int j=0; j<16; j++, i++) {
             note("%02x ", ((unsigned char *)(ptr))[i]);
         }

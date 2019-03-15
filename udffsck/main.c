@@ -413,7 +413,7 @@ int main(int argc, char *argv[]) {
         exit(status);
     }
 
-    note("LBNLSN: %d\n", lbnlsn);
+    note("LBNLSN: %u\n", lbnlsn);
     if(any_error(seq) || disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE || fast_mode == 0) {
         status |= get_file_structure(fd, dev, &disc, devsize, lbnlsn, &stats, seq);
     }
@@ -427,23 +427,23 @@ int main(int argc, char *argv[]) {
     }
 
     uint64_t countedBits = count_used_bits(&stats);
-    dbg("**** BITMAP USED SPACE: %d ****\n", countedBits);
+    dbg("**** BITMAP USED SPACE: %" PRIu64 " ****\n", countedBits);
 
     //---------- Corrections --------------
     msg("\nFilesystem status\n-----------------\n");
     get_volume_identifier(&disc, &stats, seq);  
     msg("Volume set identifier: %s\n", stats.volumeSetIdent);
     msg("Partition identifier: %s\n", stats.partitionIdent);
-    msg("Next UniqueID: %d\n", stats.actUUID);
+    msg("Next UniqueID: %" PRIu64 "\n", stats.actUUID);
     if(fast_mode == 0) {
-        msg("Max found UniqueID: %d\n", stats.maxUUID);
+        msg("Max found UniqueID: %" PRIu64 "\n", stats.maxUUID);
     }
     msg("Last LVID recoreded change: %s\n", print_timestamp(stats.LVIDtimestamp));
-    msg("expected number of files: %d\n", stats.expNumOfFiles);
-    msg("expected number of dirs:  %d\n", stats.expNumOfDirs);
+    msg("expected number of files: %u\n", stats.expNumOfFiles);
+    msg("expected number of dirs:  %u\n", stats.expNumOfDirs);
     if(fast_mode == 0) {
-        msg("counted number of files: %d\n", stats.countNumOfFiles);
-        msg("counted number of dirs:  %d\n", stats.countNumOfDirs);
+        msg("counted number of files: %u\n", stats.countNumOfFiles);
+        msg("counted number of dirs:  %u\n", stats.countNumOfDirs);
         if(stats.expNumOfDirs != stats.countNumOfDirs || stats.expNumOfFiles != stats.countNumOfFiles) {
             seq->lvid.error |= E_FILES;
         }
@@ -460,18 +460,18 @@ int main(int argc, char *argv[]) {
     if(fast_mode == 0) {
         expUsedSpace = (stats.partitionSizeBlocks-stats.freeSpaceBlocks)*blocksize;
         msg("Expected Used Space: %"PRIu64" (%"PRIu64")\n", (uint64_t)expUsedSpace, (uint64_t)(expUsedSpace)/(uint64_t)(blocksize));
-        msg("Expected Used Blocks: %d\nExpected Unused Blocks: %d\n", stats.expUsedBlocks, stats.expUnusedBlocks);
+        msg("Expected Used Blocks: %u\nExpected Unused Blocks: %u\n", stats.expUsedBlocks, stats.expUnusedBlocks);
     }
     if(fast_mode == 0) {
         int64_t usedSpaceDiff = expUsedSpace-stats.usedSpace;
         if(usedSpaceDiff != 0) {
-            err("%d blocks is unused but not marked as unallocated in Free Space Table.\n", usedSpaceDiff/blocksize);
-            err("Correct free space: %lu\n", stats.freeSpaceBlocks + usedSpaceDiff/blocksize);
+            err("%" PRId64 " blocks are unused but not marked as unallocated in Free Space Table.\n", usedSpaceDiff/blocksize);
+            err("Correct free space: %" PRId64 "\n", stats.freeSpaceBlocks + usedSpaceDiff/blocksize);
             seq->lvid.error |= E_FREESPACE;
         }
-        int32_t usedSpaceDiffBlocks = stats.expUsedBlocks - countedBits;//stats.usedSpace/blocksize;
+        int64_t usedSpaceDiffBlocks = stats.expUsedBlocks - countedBits;//stats.usedSpace/blocksize;
         if(usedSpaceDiffBlocks != 0) {
-            err("%d blocks is unused but not marked as unallocated in SBD.\n", usedSpaceDiffBlocks);
+            err("%" PRId64 " blocks are unused but not marked as unallocated in SBD.\n", usedSpaceDiffBlocks);
             seq->pd.error |= E_FREESPACE; 
         }
     }
@@ -649,7 +649,7 @@ int main(int argc, char *argv[]) {
     uint32_t line = 0;
     uint32_t amount = 50000;
     for(int i=0+shift, k=0+shift; i<stats.partitionSizeBlocks/8 && i < amount+shift; ) {
-        note("[%04d] ",line++);
+        note("[%04u] ",line++);
         for(int j=0; j<16; j++, i++) {
             note("%02x ", stats.actPartitionBitmap[i]);
         }
