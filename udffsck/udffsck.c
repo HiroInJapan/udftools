@@ -887,9 +887,19 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint
         memcpy(disc->udf_anchor[type], dev[chunk]+offset, sizeof(struct anchorVolDescPtr));
 
         if(crc(disc->udf_anchor[type], sizeof(struct anchorVolDescPtr))) {
-            status |= E_CRC;
-            unmap_chunk(dev, chunk, devsize); 
-            continue;
+            // Some implementations mistakenly use a short descCRCLength
+            // that doesn't cover the large 'reserved' region of the AVDP.
+            // This does not bother Windows or Linux, don't let it bother us.
+            uint16_t shortenedDescSize = offsetof(struct anchorVolDescPtr, reserved);
+            if(   (desc_tag.descCRCLength == (shortenedDescSize - sizeof(tag)))
+               && (crc(disc->udf_anchor[type], shortenedDescSize) == 0)) {
+                warn("AVDP descCRCLength is non-compliant\n");
+            }
+            else {
+                status |= E_CRC;
+                unmap_chunk(dev, chunk, devsize);
+                continue;
+            }
         }
 
         if(check_position(desc_tag, position/ssize)) {
