@@ -1552,19 +1552,14 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
             *status |= 4; 
             return 4;
         }
+
         //CRC
-#if 0
-        dbg("AED: descCRCLength: %u, LAD: %u\n", aed->descTag.descCRCLength, aed->lengthAllocDescs);
-        dbg("AED: CRC: 0x%04x\n", aed->descTag.descCRC);
-        for(int i=16; i<aed->descTag.descCRCLength+16; i++) {
-            dbg("[%d]: CRC: 0x%04x\n", i, udf_crc((uint8_t *)(aed) + sizeof(tag), i - sizeof(tag), 0));
-        }
-        if(crc(aed, aed->descTag.descCRCLength-8)) {
+        if(crc(aed, aed->descTag.descCRCLength + sizeof(tag))) {
             err("AED CRC failed\n");
             *status |= 4;
             return 4;
         }
-#endif
+
         // position
         if(check_position(aed->descTag, aedlbn)) {
             err("AED position differs\n");
