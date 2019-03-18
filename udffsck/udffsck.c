@@ -1445,7 +1445,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     lap = (long_ad *)disc->udf_lvd[vds]->logicalVolContentsUse; //FIXME BIG_ENDIAN use lela_to_cpu, but not on ptr to disc. Must store it on different place.
     lb_addr filesetblock = lap->extLocation;
 
-    uint32_t filesetlen = lap->extLength;
+    uint32_t filesetlen = lap->extLength & 0x3FFFFFFF;
 
     dbg("FSD at (%u, p%u)\n",
             lap->extLocation.logicalBlockNum,
@@ -1500,7 +1500,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     stats->dstringFSDCopyrightFileIdentErr = check_dstring(disc->udf_fsd->copyrightFileIdent, 32);
     stats->dstringFSDAbstractFileIdentErr = check_dstring(disc->udf_fsd->abstractFileIdent, 32);
 
-    dbg("Stream Length: %u\n", disc->udf_fsd->streamDirectoryICB.extLength);
+    dbg("Stream Length: %u\n", disc->udf_fsd->streamDirectoryICB.extLength & 0x3FFFFFFF);
 
     (void)sectorsize;
 
@@ -2421,51 +2421,68 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
             uint8_t fid_inspected = 0;
             uint8_t *allocDescs = (ext ? efe->extendedAttrAndAllocDescs : fe->extendedAttrAndAllocDescs) + L_EA; 
-            if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT) {
-                if(dir) {
-                    fid_inspected = 1;
-                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
-                                   ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
-                } else {
-                    dbg("SHORT\n");
-                    dbg("LAD: %u, N: %u, rest: %u\n", L_AD, L_AD/sizeof(short_ad), L_AD%sizeof(short_ad));
-                    for(int si = 0; si < (int)(L_AD/sizeof(short_ad)); si++) {
-                        dwarn("SHORT #%d\n", si);
-                        short_ad *sad = (short_ad *)(allocDescs + si*sizeof(short_ad));
-                        dbg("ExtLen: %u, ExtLoc: %u\n", sad->extLength, sad->extPosition);
+            uint16_t icbTagADFlags = le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK;
+            if (   (icbTagADFlags == ICBTAG_FLAG_AD_SHORT)
+                || (icbTagADFlags == ICBTAG_FLAG_AD_LONG)) {
 
-                        dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                        uint32_t usedsize = sad->extLength;
-                        dbg("Used size: %u\n", usedsize);
-                        increment_used_space(stats, usedsize, sad->extPosition);
-                        lsn = lsn + sad->extLength/lbSize;
-                        dbg("LSN: %u, ExtLocOrig: %u\n", lsn, sad->extPosition);
-                        dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                        dwarn("Size: %u, Blocks: %u\n", usedsize, usedsize/lbSize);
-                    }
-                }
-            } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_LONG) {
                 if(dir) {
                     fid_inspected = 1;
                     walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
-                                   ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
+                                   icbTagADFlags, stats, depth, seq, &status);
                 } else {
-                    for(int si = 0; si < (int)(L_AD/sizeof(long_ad)); si++) {
+                    size_t descLen;
+                    if (icbTagADFlags == ICBTAG_FLAG_AD_SHORT) {
+                        descLen = sizeof(short_ad);
+                        dbg("SHORT\n");
+                    } else {
+                        descLen = sizeof(long_ad);
                         dbg("LONG\n");
-                        long_ad *lad = (long_ad *)(allocDescs + si*sizeof(long_ad));
-                        dbg("ExtLen: %u, ExtLoc: %u\n", lad->extLength/lbSize,
-                            lad->extLocation.logicalBlockNum+lsnBase);
+                    }
+                    dbg("LAD: %u, N: %u, rest: %u\n", L_AD, L_AD / descLen, L_AD % descLen);
+                    for(int si = 0; si < (int)(L_AD / descLen); si++) {
+                        uint32_t extLength;
+                        uint32_t extType;
+                        uint32_t extPosition;
 
+                        if (icbTagADFlags == ICBTAG_FLAG_AD_SHORT) {
+                            dwarn("SHORT #%d\n", si);
+                            short_ad *sad = (short_ad *)(allocDescs + si*descLen);
+                            extLength   = sad->extLength & 0x3FFFFFFF;
+                            extType     = sad->extLength >> 30;
+                            extPosition = sad->extPosition;
+
+                        } else {
+                            dwarn("LONG #%d\n", si);
+                            long_ad *lad = (long_ad *)(allocDescs + si*descLen);
+                            extLength   = lad->extLength & 0x3FFFFFFF;
+                            extType     = lad->extLength >> 30;
+                            extPosition = lad->extLocation.logicalBlockNum;
+                        }
+
+                        dbg("ExtLen: %u, type: %u, ExtLoc: %u\n", extLength, extType, extPosition);
+
+                        // ECMA 167r3 sec. 12: AD with zero extent length terminates the sequence
+                        if (!extLength)
+                            break;
+
+                        if (extType == 3) {
+                            err("Chain to AED is not supported yet. Calculated space bitmap / free space will be incorrect.\n");
+                            status |= 8;   // Program error
+                            break;
+                        }
                         dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                        uint32_t usedsize = lad->extLength;//(fe->informationLength%lbSize == 0 ? fe->informationLength : (fe->informationLength + lbSize - fe->informationLength%lbSize));
-                        increment_used_space(stats, usedsize, lad->extLocation.logicalBlockNum);
-                        lsn = lsn + lad->extLength/lbSize;
-                        dbg("LSN: %u\n", lsn);
+
+                        if (extType < 2) {
+                            // Allocated
+                            increment_used_space(stats, extLength, extPosition);
+                        }
+                        lsn = lsn + (extLength / lbSize);
+                        dbg("LSN: %u, ExtLocOrig: %u\n", lsn, extPosition);
                         dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                        dwarn("Size: %u, Blocks: %u\n", usedsize, usedsize/lbSize);
+                        dwarn("Size: %u, Blocks: %u\n", extLength, extLength / lbSize);
                     }
                 }
-            } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_EXTENDED) {
+            } else if(icbTagADFlags == ICBTAG_FLAG_AD_EXTENDED) {
                 if(dir) {
                     fid_inspected = 1;
                     walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
@@ -2473,7 +2490,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 } else {
                     err("EAD found. Please report.\n");
                 }
-            } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_IN_ICB) {
+            } else if(icbTagADFlags == ICBTAG_FLAG_AD_IN_ICB) {
                 dbg("AD in ICB\n");
                 struct extendedAttrHeaderDesc eahd;
                 struct genericFormat *gf;
