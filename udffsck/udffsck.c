@@ -2248,8 +2248,6 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 if(interactive) {
                     if(prompt("Fix it? [Y/n] ")) {
                         fixsernum = 1;
-                    } else {
-                        status |= 4;
                     }
                 }
                 if(fixsernum) {
@@ -2261,6 +2259,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                     descTag->tagChecksum = calculate_checksum(*descTag);
                     status |= 1;
+                } else {
+                    status |= 4;
                 }
             }
             dbg("\nFE, LSN: %u, EntityID: %s ", lsn, fe->impIdent.ident);
