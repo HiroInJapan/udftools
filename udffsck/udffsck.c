@@ -1566,15 +1566,15 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
             *status |= 4;
         }
 
-        uint32_t lad = aed->lengthAllocDescs;
-        uint8_t *newADArray = realloc(*ADArray, *lengthADArray + lad);
+        uint32_t L_AD = aed->lengthAllocDescs;
+        uint8_t *newADArray = realloc(*ADArray, *lengthADArray + L_AD);
         if (!newADArray) {
             err("AED realloc failed\n");
             return 2;
         }
-        memcpy(newADArray + *lengthADArray, (uint8_t *)(aed)+sizeof(struct allocExtDesc), lad);
+        memcpy(newADArray + *lengthADArray, (uint8_t *)(aed)+sizeof(struct allocExtDesc), L_AD);
         *ADArray = newADArray;
-        *lengthADArray += lad;
+        *lengthADArray += L_AD;
 #if 0  //For debug purposes only
         uint32_t line = 0;
         dbg("AED Array\n");
@@ -1590,7 +1590,7 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
         dbg("ADArray ptr: %p\n", *ADArray);
 #endif
         dbg("lengthADArray: %u\n", *lengthADArray);
-        increment_used_space(stats, lad%lbSize == 0 ? lad/lbSize : lad/lbSize + 1, aedlbn);
+        increment_used_space(stats, L_AD%lbSize == 0 ? L_AD/lbSize : L_AD/lbSize + 1, aedlbn);
         return 0;
     } else {
         err("There should be AED, but is not\n");
@@ -2166,7 +2166,7 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t increment, uin
 uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
                  uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
                  uint32_t uuid, struct fileInfo info, vds_sequence_t *seq ) {
-    tag descTag;
+    tag *descTag;
     struct fileEntry *fe;
     struct extendedFileEntry *efe;
     int vds = -1;
@@ -2192,8 +2192,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
     map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
-    descTag = *(tag *)(dev[chunk]+offset);
-    if(!checksum(descTag)) {
+    descTag = (tag *)(dev[chunk]+offset);
+    if(!checksum(*descTag)) {
         err("Tag checksum failed. Unable to continue.\n");
         return 4;
     }
@@ -2202,7 +2202,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
     dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
     increment_used_space(stats, lbSize, lsn-lbnlsn);
     dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-    switch(le16_to_cpu(descTag.tagIdent)) {
+    switch(le16_to_cpu(descTag->tagIdent)) {
         case TAG_IDENT_FE:
         case TAG_IDENT_EFE:
             dir = 0;
@@ -2210,7 +2210,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             efe = (struct extendedFileEntry *)fe;
             uint8_t ext = 0;
 
-            if(le16_to_cpu(descTag.tagIdent) == TAG_IDENT_EFE) {
+            if(le16_to_cpu(descTag->tagIdent) == TAG_IDENT_EFE) {
                 dwarn("[EFE]\n");
                 if(crc(efe, sizeof(struct extendedFileEntry) + le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs))) {
                     err("EFE CRC failed.\n");
@@ -2241,8 +2241,8 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                 }
             }
-            dbg("Tag Serial Num: %u\n", descTag.tagSerialNum);
-            if(stats->AVDPSerialNum != descTag.tagSerialNum) {
+            dbg("Tag Serial Num: %u\n", descTag->tagSerialNum);
+            if(stats->AVDPSerialNum != descTag->tagSerialNum) {
                 err("(%s) Tag Serial Number differs.\n", info.filename);
                 uint8_t fixsernum = autofix;
                 if(interactive) {
@@ -2253,23 +2253,22 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                 }
                 if(fixsernum) {
-                    descTag.tagSerialNum = stats->AVDPSerialNum;
+                    descTag->tagSerialNum = stats->AVDPSerialNum;
                     if(ext) {
-                        efe->descTag.descCRC = calculate_crc(efe, sizeof(struct extendedFileEntry) + le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs));
-                        efe->descTag.tagChecksum = calculate_checksum(efe->descTag);
+                        descTag->descCRC = calculate_crc(efe, sizeof(struct extendedFileEntry) + le32_to_cpu(efe->lengthExtendedAttr) + le32_to_cpu(efe->lengthAllocDescs));
                     } else {
-                        fe->descTag.descCRC = calculate_crc(fe, sizeof(struct fileEntry) + le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs));
-                        fe->descTag.tagChecksum = calculate_checksum(fe->descTag);
+                        descTag->descCRC = calculate_crc(fe, sizeof(struct fileEntry) + le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs));
                     }
+                    descTag->tagChecksum = calculate_checksum(*descTag);
                     status |= 1;
                 }
             }
             dbg("\nFE, LSN: %u, EntityID: %s ", lsn, fe->impIdent.ident);
             dbg("fileLinkCount: %u, LB recorded: %" PRIu64 "\n", fe->fileLinkCount,
                 ext ? efe->logicalBlocksRecorded: fe->logicalBlocksRecorded);
-            uint32_t lea = ext ? efe->lengthExtendedAttr : fe->lengthExtendedAttr;
-            uint32_t lad =  ext ? efe->lengthAllocDescs : fe->lengthAllocDescs;
-            dbg("LEA %u, LAD %u\n", lea, lad);
+            uint32_t L_EA = ext ? efe->lengthExtendedAttr : fe->lengthExtendedAttr;
+            uint32_t L_AD = ext ? efe->lengthAllocDescs   : fe->lengthAllocDescs;
+            dbg("L_EA %u, L_AD %u\n", L_EA, L_AD);
             dbg("Information Length: %" PRIu64 "\n", fe->informationLength);
 
 
@@ -2421,16 +2420,16 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             print_file_info(info, depth);
 
             uint8_t fid_inspected = 0;
-            uint8_t *allocDescs = (ext ? efe->extendedAttrAndAllocDescs : fe->extendedAttrAndAllocDescs) + lea; 
+            uint8_t *allocDescs = (ext ? efe->extendedAttrAndAllocDescs : fe->extendedAttrAndAllocDescs) + L_EA; 
             if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT) {
                 if(dir) {
                     fid_inspected = 1;
-                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
                                    ICBTAG_FLAG_AD_SHORT, stats, depth, seq, &status);
                 } else {
                     dbg("SHORT\n");
-                    dbg("LAD: %u, N: %u, rest: %u\n", lad, lad/sizeof(short_ad), lad%sizeof(short_ad));
-                    for(int si = 0; si < (int)(lad/sizeof(short_ad)); si++) {
+                    dbg("LAD: %u, N: %u, rest: %u\n", L_AD, L_AD/sizeof(short_ad), L_AD%sizeof(short_ad));
+                    for(int si = 0; si < (int)(L_AD/sizeof(short_ad)); si++) {
                         dwarn("SHORT #%d\n", si);
                         short_ad *sad = (short_ad *)(allocDescs + si*sizeof(short_ad));
                         dbg("ExtLen: %u, ExtLoc: %u\n", sad->extLength, sad->extPosition);
@@ -2448,10 +2447,10 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_LONG) {
                 if(dir) {
                     fid_inspected = 1;
-                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
                                    ICBTAG_FLAG_AD_LONG, stats, depth, seq, &status);
                 } else {
-                    for(int si = 0; si < (int)(lad/sizeof(long_ad)); si++) {
+                    for(int si = 0; si < (int)(L_AD/sizeof(long_ad)); si++) {
                         dbg("LONG\n");
                         long_ad *lad = (long_ad *)(allocDescs + si*sizeof(long_ad));
                         dbg("ExtLen: %u, ExtLoc: %u\n", lad->extLength/lbSize,
@@ -2469,7 +2468,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             } else if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_EXTENDED) {
                 if(dir) {
                     fid_inspected = 1;
-                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, lad,
+                    walk_directory(fd, dev, disc, devsize, lbnlsn, lsn, allocDescs, L_AD,
                                    ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
                 } else {
                     err("EAD found. Please report.\n");
@@ -2480,25 +2479,22 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 struct genericFormat *gf;
                 struct impUseExtAttr *impAttr;
                 struct appUseExtAttr *appAttr;
-                tag *descTag;
                 uint8_t *base = NULL;
                 if(ext) {
-                    eahd = *(struct extendedAttrHeaderDesc *)(efe + sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr);
-                    descTag = (tag *)((uint8_t *)(efe) + sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr); 
+                    eahd = *(struct extendedAttrHeaderDesc *)((uint8_t *)(efe) + sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr);
 #ifdef MEMTRACE
                     dbg("efe: %p, POS: %u, descTag: %p\n", efe,
-                        sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr, descTag);
+                        sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr, &eahd.descTag);
 #endif
                 } else {    
-                    eahd = *(struct extendedAttrHeaderDesc *)(fe + sizeof(struct fileEntry) + fe->lengthExtendedAttr);
-                    descTag = (tag *)((uint8_t *)(fe) + sizeof(struct fileEntry) + fe->lengthExtendedAttr); 
+                    eahd = *(struct extendedAttrHeaderDesc *)((uint8_t *)(fe) + sizeof(struct fileEntry) + fe->lengthExtendedAttr);
 #ifdef MEMTRACE
                     dbg("fe: %p, POS: %u, descTag: %p\n", fe,
-                        sizeof(struct fileEntry) + fe->lengthExtendedAttr, descTag);
+                        sizeof(struct fileEntry) + fe->lengthExtendedAttr, &eahd.descTag);
 #endif
                 }
 
-                if(descTag->tagIdent == TAG_IDENT_EAHD) {
+                if(eahd.descTag.tagIdent == TAG_IDENT_EAHD) {
                     base = (ext ? efe->extendedAttrAndAllocDescs : fe->extendedAttrAndAllocDescs) + eahd.appAttrLocation;
 
                     dbg("impAttrLoc: %u, appAttrLoc: %u\n", eahd.impAttrLocation, eahd.appAttrLocation);
@@ -2539,7 +2535,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                         }
                     }
                 } else {
-                    dwarn("ID: 0x%02x\n",descTag->tagIdent);
+                    dwarn("ID: 0x%02x\n", eahd.descTag.tagIdent);
                 }
 
             } else {
@@ -2576,7 +2572,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 dbg("2 FID inspection over.\n");
                 if (tempStatus & 1) {
                     // FID(s) were fixed - update FE/EFE CRC
-                    tag *descTag = &efe->descTag;  // same as &fe->descTag
+                    descTag = &efe->descTag;  // same as &fe->descTag
                     descTag->descCRC = udf_crc((uint8_t *)(descTag + 1),  descTag->descCRCLength, 0);
                     descTag->tagChecksum = calculate_checksum(*descTag);
                 }
@@ -2584,7 +2580,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             }
             break;  
         default:
-            err("IDENT: %x, LSN: %u, addr: 0x%" PRIx64 "\n", descTag.tagIdent, lsn,
+            err("IDENT: %x, LSN: %u, addr: 0x%" PRIx64 "\n", descTag->tagIdent, lsn,
                 lsn * (uint64_t)lbSize);
     }            
     // unmap_chunk(dev, chunk, devsize); 
