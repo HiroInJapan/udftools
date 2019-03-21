@@ -2270,42 +2270,11 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             uint32_t L_AD = ext ? efe->lengthAllocDescs   : fe->lengthAllocDescs;
             dbg("L_EA %u, L_AD %u\n", L_EA, L_AD);
             dbg("Information Length: %" PRIu64 "\n", fe->informationLength);
-
-
-            if((le16_to_cpu(fe->icbTag.flags) & ICBTAG_FLAG_AD_MASK) != ICBTAG_FLAG_AD_IN_ICB && fe->icbTag.fileType == ICBTAG_FILE_TYPE_REGULAR && (fe->informationLength % stats->blocksize == 0? fe->informationLength/stats->blocksize : fe->informationLength/stats->blocksize + 1) != (ext ? efe->logicalBlocksRecorded : fe->logicalBlocksRecorded)) {
-                uint32_t info_len_blocks = (uint32_t) (fe->informationLength / stats->blocksize);
-                if ((fe->informationLength % stats->blocksize) != 0)
-                    info_len_blocks++;
-                dbg("InfLenBlocks: %u\n", info_len_blocks);
-                dbg("BlocksRecord: %" PRIu64 "\n", ext ? efe->logicalBlocksRecorded : fe->logicalBlocksRecorded);
-                err("(%s) File size mismatch. Probably unfinished file write.\n", info.filename);
-                int fixit = 0;
-
-                if(interactive) {
-                    if(prompt("Fix it? [Y/n] ")) {
-                        fixit = 1;
-                    } else {
-                        status |= 4;
-                    }
-                } else if(autofix) {
-                    fixit = 1;
-                } 
-
-                if(fixit) {
-                    imp("Removing unfinished file...\n");
-                    dbg("global FE decrement.\n");
-                    dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                    decrement_used_space(stats, lbSize, lsn-lbnlsn);
-                    dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-                    uint8_t *blank;
-                    blank = malloc(stats->blocksize);
-                    memcpy(fe, blank, stats->blocksize);
-                    free(blank);
-                    //unmap_chunk(dev, chunk, devsize);
-                    sync_chunk(dev, chunk, devsize);
-                    return 32; 
-                }
-            }
+            uint32_t info_len_blocks = (uint32_t) (fe->informationLength / stats->blocksize);
+            if ((fe->informationLength % stats->blocksize) != 0)
+                info_len_blocks++;
+            dbg("InfLenBlocks: %u\n", info_len_blocks);
+            dbg("BlocksRecord: %" PRIu64 "\n", ext ? efe->logicalBlocksRecorded : fe->logicalBlocksRecorded);
 
             info.size = fe->informationLength;
             info.fileType = fe->icbTag.fileType;
