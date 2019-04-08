@@ -66,8 +66,8 @@ void user_interrupt(int dummy) {
 /**
  * \brief Segmentation fault handler
  *
- * If program dies because of SEGV, this handler catches it and die properly.
- * It instructs user to report it, because this behavior is bug.
+ * If program dies because of SEGV, this handler catches it and dies properly.
+ * It instructs user to report it, because this behavior is a bug.
  */
 void segv_interrupt(int dummy) {
     (void)dummy;
@@ -78,12 +78,12 @@ void segv_interrupt(int dummy) {
 /**
  * \brief Bus error handler
  *
- * If program dies because of SIGBUS, this handler catches it and die properly.
- * It instructs user to report it, because this behavior is bug.
+ * If program dies because of SIGBUS, this handler catches it and dies properly.
+ * It instructs user to report it, because this behavior is a bug.
  */
 void sigbus_interrupt(int dummy) {
     (void)dummy;
-    fatal("Medium changed its size during fsck run. Is somebody manipulating with it? Exiting.\n");
+    fatal("Medium changed size during fsck run. Is somebody manipulating it? Exiting.\n");
     exit(8);
 }
 
@@ -121,14 +121,14 @@ int any_error(vds_sequence_t *seq) {
  * \brief **udffsck** entry point
  *
  * This is entry point for **udffsck**. It contains structure of whole tool and calls 
- * function from udffsck.c
+ * functions in udffsck.c
  *
  * It accepts inputs via argv.
  *
  * \return 0 -- No error
  * \return 1 -- Filesystem errors were fixed
- * \return 2 -- Filesystem errors were fixed, reboot is recomended (Unsupported)
- * \return 4 -- Filesystem errors remained unfixed
+ * \return 2 -- Filesystem errors were fixed, reboot is recommended (Unsupported)
+ * \return 4 -- Filesystem errors remain unfixed
  * \return 8 -- Program error
  * \return 16 -- Wrong input parameters
  * \return 32 -- Check was interrupted by user request
@@ -176,7 +176,7 @@ int main(int argc, char *argv[]) {
 
     note("Verbose: %d, Autofix: %d, Interactive: %d\n", verbosity, autofix, interactive);
     if(fast_mode)
-        warn("Fast mode active. File tree checks will be skipped if rest of filesystem will be clean.\n");
+        warn("Fast mode active. File tree checks will be skipped if rest of filesystem is clean.\n");
 
     if(path == NULL) {
         err("No medium given. Use -h for help.\n");
@@ -243,16 +243,17 @@ int main(int argc, char *argv[]) {
         {
             if (errno != ENOENT)
             {
-                error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or mkudffs is already running";
+                error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or udffsck is already running";
                 fatal("Cannot open device '%s': %s\n", path, error);
                 exit(16);
             }
 
-            // Fallback to orignal filename when /proc is not available, but this introduce race condition between stat and open
+            // Fallback to original filename when /proc is not available,
+            // but this introduces a race condition between stat and open
             fd2 = open(path, flags2);
             if (fd2 < 0)
             {
-                error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or mkudffs is already running";
+                error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or udffsck is already running";
                 fatal("Cannot open device '%s': %s\n", path, error);
                 exit(16);
             }
@@ -267,9 +268,11 @@ int main(int argc, char *argv[]) {
         fatal("Error opening %s: %s.", path, strerror(errno));
         exit(16);
     }
-    //Lock medium to ensure no-one is going to change during our operation. Make nonblocking, so it will fail when medium is already locked.
+
+    // Lock medium to ensure no-one is going to change during our operation.
+    // Make nonblocking, so it will fail when medium is already locked.
     if(flock(fd, LOCK_EX | LOCK_NB)) { 
-        fatal("Error locking %s, %s. Is antoher process using it?\n", path, strerror(errno));
+        fatal("Error locking %s, %s. Is another process using it?\n", path, strerror(errno));
         exit(16);
     }
 
@@ -307,7 +310,7 @@ int main(int argc, char *argv[]) {
         exit(status);
     } else if(status == 1) { //Unclosed or bridged medium 
         status = get_avdp(fd, dev, &disc, &blocksize, devsize, -1, force_sectorsize, &stats); //load AVDP and verify blocksize
-        source = FIRST_AVDP; // Unclosed medium have only one AVDP and that is saved at first position.
+        source = FIRST_AVDP; // Unclosed medium has only one AVDP and that is saved at first position.
         if(status) {
             err("AVDP is broken. Aborting.\n");
             exit(4);
@@ -329,7 +332,7 @@ int main(int argc, char *argv[]) {
 
         seq->anchor[2].error = get_avdp(fd, dev, &disc, &blocksize, devsize, THIRD_AVDP, force_sectorsize, &stats); //load AVDP
         if(seq->anchor[2].error) {
-            dbg("AVDP[2] somehow errored, not necessarily bad thing.\n");
+            dbg("AVDP[2] somehow errored, not necessarily a bad thing.\n");
             if(seq->anchor[2].error < 255) { //Third AVDP is not necessarily present.
                 err("AVDP[2] is broken.\n");
             } else {
@@ -348,7 +351,7 @@ int main(int argc, char *argv[]) {
             source = THIRD_AVDP;
         } else {
             if(force_sectorsize)
-                err("All AVDP are broken or wrong block size was entered. Try running without -B option. Aborting.\n");
+                err("All AVDP are broken or wrong block size was entered. Try running without -b option. Aborting.\n");
             else
                 err("All AVDP are broken. Aborting.\n");
             exit(4);
@@ -364,7 +367,7 @@ int main(int argc, char *argv[]) {
 
     // Correct blocksize MUST be blocksize%512 == 0. We keep definitive list for now.
     if(!((blocksize == 512) | (blocksize == 1024) | (blocksize == 2048) | (blocksize == 4096))) {
-        err("Invalid blocksize. Posible blocksizes must be dividable by 512.\n");
+        err("Invalid blocksize. Supported values are 512, 1024, 2048, and 4096.\n");
         exit(16);
     }
 
@@ -378,7 +381,7 @@ int main(int argc, char *argv[]) {
     dbg("Second VDS verification\n");
     verify_vds(&disc, RESERVE_VDS, seq, &stats);
 
-    //Check if blocksizes matches. If not, exit.
+    //Check if blocksize matches. If not, exit.
     int blocksize_status = check_blocksize(fd, dev, &disc, blocksize, force_sectorsize, seq);
     if(blocksize_status != 0)
         exit(status | blocksize_status);
@@ -406,7 +409,7 @@ int main(int argc, char *argv[]) {
     status |= get_fsd(fd, dev, &disc, blocksize, devsize, &lbnlsn, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
     if(status >= 8) {
-        err("Unable to continue without FSD. Consider submitting bug report. Exiting.\n");
+        err("Unable to continue without FSD. Consider submitting a bug report. Exiting.\n");
         exit(status);
     } else if(status >= 4) {
         err("Unable to continue without FSD. Medium seems unrecoverable. Exiting.\n");
@@ -438,7 +441,7 @@ int main(int argc, char *argv[]) {
     if(fast_mode == 0) {
         msg("Max found UniqueID: %" PRIu64 "\n", stats.maxUUID);
     }
-    msg("Last LVID recoreded change: %s\n", print_timestamp(stats.LVIDtimestamp));
+    msg("Last LVID recorded change: %s\n", print_timestamp(stats.LVIDtimestamp));
     msg("expected number of files: %u\n", stats.expNumOfFiles);
     msg("expected number of dirs:  %u\n", stats.expNumOfDirs);
     if(fast_mode == 0) {
@@ -529,7 +532,7 @@ int main(int argc, char *argv[]) {
 
         int fixavdp = 0;
         if(interactive) {
-            if(prompt("Found error at AVDP. Do you want to fix them? [Y/n]") != 0) {
+            if(prompt("Found AVDP error(s). Do you want to fix them? [Y/n]") != 0) {
                 fixavdp = 1;
             }
         }

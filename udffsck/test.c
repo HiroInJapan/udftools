@@ -44,7 +44,7 @@
 /**
  * \brief UDF fsck exec wrapper for simplified test writing
  *
- * This function wraps fork/exec around udfffsck calling. 
+ * This function wraps fork/exec around udffsck calling.
  * Expected path differs based on define BASIC_TESTS (udf-samples) or EXTRA_TESTS (udf-samples-extra)
  *
  * \return udffsck exit code
@@ -178,7 +178,7 @@ void bs2048_dirty_file_tree_3(void **state) {
 /**
  * \brief This medium should be clean, so this is test for positive result.
  * \note Blocksize: 2048
- * \note Revisiob: 2.01
+ * \note Revision: 2.01
  */
 void bs2048_clean(void **state) {
     (void) state;
@@ -335,7 +335,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 1
+ * \brief Cross-platform medium test no. 1
  *
  * Clean medium right from MS Windows 7
  *
@@ -349,7 +349,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 2
+ * \brief Cross-platform medium test no. 2
  *
  * Broken file tree
  *
@@ -365,7 +365,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 3
+ * \brief Cross-platform medium test no. 3
  *
  * CHKDSK broken medium
  *
@@ -381,7 +381,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 4
+ * \brief Cross-platform medium test no. 4
  *
  * Serial numbers broken (Linux / Win noncompatibility)
  *
@@ -397,7 +397,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 5
+ * \brief Cross-platform medium test no. 5
  *
  * Serial numbers broken afterfix write
  *
@@ -411,7 +411,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 6
+ * \brief Cross-platform medium test no. 6
  *
  * AED test case at directory .git/objects
  *
@@ -427,7 +427,7 @@ void bs2048_apple_r0150(void **state) {
 }
 
 /**
- * \brief Crosplatform medium test no. 7
+ * \brief Cross-platform medium test no. 7
  *
  * Another medium from Win7
  *

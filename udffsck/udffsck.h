@@ -32,7 +32,7 @@
 
 #define VDS_STRUCT_AMOUNT 8 ///< Maximum amount of VDS descriptors 
 #define BLOCK_SIZE 2048 ///< Minimal VRS search block size
-#define CHUNK_SIZE ((uint32_t)0x800000) ///< Chunk size for using
+#define CHUNK_SIZE ((uint32_t)0x800000) ///< mmap() the device in multiples of this many bytes
 
 
 typedef enum {

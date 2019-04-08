@@ -53,11 +53,11 @@ static struct option long_options[] =
  * Help string for options
  */
 static char * help[] = {
-    "Increase verbosity. Without it are printed only error messages, -v prints warnings, -vv is for humans, -vvv is for developers and curious people.",
+    "Increase verbosity. Without it, only error messages are printed. -v prints warnings, -vv is for humans, -vvv is for developers and curious people.",
     "Medium block size. Mandatory parameter, can be 512, 1024, 2048 or 4096.",
-    "Medium is will be fixed interactivelly and all fixings must be authorized by user.",
-    "Medium is will be fixed automatically. All found errors will be fixed if possible.",
-    "Medium will be only checked. This is default behavior, but this flag override -p.",
+    "Medium will be fixed interactively and all fixes must be authorized by user.",
+    "Medium will be fixed automatically. All found errors will be fixed if possible.",
+    "Medium will only be checked. This is default behavior, but this flag overrides -p.",
     "Tool output will be colored with ASCII color codes.",
     "Fast mode: File tree check will be skipped.",
     "This help message.",
@@ -84,7 +84,7 @@ void usage(void)
     printf("Return codes:\n");
     printf("  0 - No error\n"
            "  1 - Filesystem errors were fixed\n"
-          /* "  2 - Filesystem errors were fixed, reboot is recomended\n"*/
+          /* "  2 - Filesystem errors were fixed, reboot is recommended\n"*/
            "  4 - Filesystem errors remained unfixed\n"
            "  8 - Program error\n"
            "  16 - Wrong input parameters\n"
@@ -97,7 +97,8 @@ void usage(void)
 /**
  * \brief Input argument parsing function
  *
- * This function parse thru inputs. It recognizes following: -vvvipch -B <BLOCKSIZE>. Without any argument is only path to medium.
+ * This function parse thru inputs. It recognizes following: -vvvipch -B <BLOCKSIZE>.
+ * Without any argument is only path to medium.
  */
 void parse_args(int argc, char *argv[], char **path, int *blocksize) 
 {
@@ -137,12 +138,12 @@ void parse_args(int argc, char *argv[], char **path, int *blocksize)
                 break;
 
             case 'p':
-                printf ("We try to fix medium automaticaly.\n");
+                printf ("Medium will be fixed automatically without questions.\n");
                 autofix = 1;
                 break;
 
             case 'c':
-                printf ("Medium will be only checked. No corrections.\n");
+                printf ("Medium will be checked (only). No corrections.\n");
                 autofix = 0;
                 break;
 

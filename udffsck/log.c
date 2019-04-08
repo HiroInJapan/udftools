@@ -88,12 +88,12 @@ int prompt(const char *format, ...) {
 }
 
 /**
- * \brief Internall logger function producing printing to stdout
+ * \brief Internal logger function producing printing to stdout
  *
- * \param[in] type mesage types are debug, message, important, warning, error, faterr
- * \param[in] *color color ASCII formating string
+ * \param[in] type message types are debug, message, important, warning, error, faterr
+ * \param[in] *color color ASCII formatting string
  * \param[in] *format message to print
- * \param[in] arg aguments to message
+ * \param[in] arg arguments to message
  */
 void logger(message_type type, char *color, const char *format, va_list arg) {
 	char *prefix;

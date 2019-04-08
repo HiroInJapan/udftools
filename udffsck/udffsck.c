@@ -57,7 +57,7 @@ uint8_t get_error(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds);
 /**
  * \brief File tree prefix creator
  *
- * This fuction takes depth and based on that prints lines and splits
+ * This function takes depth and based on that prints lines and splits
  *
  * \param[in] depth required depth to print
  * \return NULL terminated static char array with printed depth
@@ -84,7 +84,7 @@ char * depth2str(int32_t depth) {
  * \brief Checksum calculation function for tags
  *
  * This function is tailored for checksum calculation for UDF tags.
- * It skips 5th byte, because there is result stored. 
+ * It skips 5th byte, because that's where the tag checksum is stored.
  *
  * \param[in] descTag target for checksum calculation
  * \return checksum result
@@ -106,7 +106,7 @@ uint8_t calculate_checksum(tag descTag) {
  * \param[in] descTag target for checksum calculation
  * \return result of checksum comparison, 1 if match, 0 if differs
  *
- * \warning This function have oposite results than crc() and check_position()
+ * \warning This function has opposite result polarity vs. crc() and check_position()
  */
 int checksum(tag descTag) {
     uint8_t checksum =  calculate_checksum(descTag);
@@ -115,7 +115,7 @@ int checksum(tag descTag) {
 }
 
 /**
- * \brief CRC calcultaion wrapper for udf_crc() function from libudffs
+ * \brief CRC calculation wrapper for udf_crc() function from libudffs
  *
  * \param[in] desc descriptor for calculation
  * \param[in] size size for calculation
@@ -138,7 +138,7 @@ uint16_t calculate_crc(void * restrict desc, uint16_t size) {
  *
  * \param[in] desc descriptor for calculation
  * \param[in] size size for calculation
- * \return result of checksum comparsion, 0 if match, 1 if differs
+ * \return result of checksum comparison, 0 if match, 1 if differs
  */
 int crc(void * restrict desc, uint16_t size) {
     uint16_t calcCrc = calculate_crc(desc, size);
@@ -154,7 +154,7 @@ int crc(void * restrict desc, uint16_t size) {
  *
  * \param[in] descTag tag with declared position
  * \param[in] position actual position to compare
- * \return result of position comparsion, 0 if match, 1 if differs
+ * \return result of position comparison, 0 if match, 1 if differs
  */
 int check_position(tag descTag, uint32_t position) {
     dbg("tag pos: 0x%x, pos: 0x%x\n", descTag.tagLocation, position);
@@ -183,7 +183,7 @@ char * print_timestamp(timestamp ts) {
     int8_t hrso = 0;
     int8_t mino = 0;
     dbg("offset: %d\n", offset);
-    if(type == 1 && offset > -2047) { // timestamp is in local time. Convert to UCT.
+    if(type == 1 && offset > -2047) { // timestamp is in local time. Convert to UTC.
         hrso = offset/60; // offset in hours
         mino = offset%60; // offset in minutes
     }
@@ -195,9 +195,11 @@ char * print_timestamp(timestamp ts) {
 /**
  * \brief UDF timestamp to Unix timestamp conversion function
  *
- * This function fills Unix timestamp structure with its values, add time offset from UDF timestamp to it and create timestamp.
+ * This function fills Unix timestamp structure with its values, adds time offset from UDF
+ * timestamp to it and create timestamp.
  *
- * \warning Because Unix timestamp have second as minimal unit of time, there is precission loss since UDF operates up to microseconds
+ * \warning Because Unix timestamp has 'second' as the minimal unit of time, there is precision
+ * loss since UDF tracks down to microseconds
  *
  * \param[in] t UDF timestamp
  * \return time_t Unix timestamp structure
@@ -218,7 +220,7 @@ time_t timestamp2epoch(timestamp t) {
         tm.tm_sec++;
     uint8_t type = t.typeAndTimezone >> 12;
     int16_t offset = (t.typeAndTimezone & 0x0800) > 0 ? (t.typeAndTimezone & 0x0FFF) - (0x1000) : (t.typeAndTimezone & 0x0FFF);
-    if(type == 1 && offset > -2047) { // timestamp is in local time. Convert to UCT.
+    if(type == 1 && offset > -2047) { // timestamp is in local time. Convert to UTC.
         int8_t hrso = offset/60; // offset in hours
         int8_t mino = offset%60; // offset in minutes
         tm.tm_hour -= hrso;
@@ -246,8 +248,8 @@ double compare_timestamps(timestamp a, timestamp b) {
 /**
  * \brief File information printing function
  *
- * This function wraps file charactersitics, file type, permissions, modification time, size and record name
- * and prints it in human readable form.
+ * This function wraps file characteristics, file type, permissions, modification time, size and
+ * record name and prints it in human readable form.
  *
  * Format is this: HdDPM:darwxd:arwxd:arwx <FILETYPE> <TIMESTAMP> <SIZE> "<NAME>"\n
  * - H -- Hidden
@@ -404,7 +406,7 @@ void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * f
     dbg("\tSize: 0x%" PRIx64 ", chunk size 0x%x, rest: 0x%x\n", devsize, chunksize, rest);
 
     int prot = PROT_READ;
-    // If is there some request for corrections, we need read/write access to medium
+    // If is there some request for corrections, we need read/write access to the medium
     if(interactive || autofix) {
         prot |= PROT_WRITE;
         dbg("\tRW\n");
@@ -433,7 +435,7 @@ void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * f
             default: dbg("EUnknown\n"); break;
         }
 
-        fatal("\tError maping: %s.\n", strerror(errno));
+        fatal("\tError mapping: %s.\n", strerror(errno));
         exit(8);
     }
 #ifdef MEMTRACE
@@ -471,7 +473,7 @@ static void map_raw(int fd, uint8_t **ptr, uint64_t offset, size_t size, uint64_
     dbg("\tSize: 0x%" PRIx64 ", Alloc size 0x%zx\n", devsize, size);
 
     int prot = PROT_READ;
-    // If is there some request for corrections, we need read/write access to medium
+    // If is there some request for corrections, we need read/write access to the medium
     if(interactive || autofix) {
         prot |= PROT_WRITE;
         dbg("\tRW\n");
@@ -493,7 +495,7 @@ static void map_raw(int fd, uint8_t **ptr, uint64_t offset, size_t size, uint64_
             default: dbg("EUnknown\n"); break;
         }
 
-        fatal("\tError maping: %s.\n", strerror(errno));
+        fatal("\tError mapping: %s.\n", strerror(errno));
         exit(8); 
     }
 #ifdef MEMTRACE
@@ -540,12 +542,12 @@ uint8_t dstring_error(char * string_name, uint8_t e_code) {
  * \brief Function for detection of errors in dstrings
  *
  * This function detects violation against UDF 2.1.1 in dstrings
- * Theese violations are:
+ * These violations are:
  *  1. Non-zero padding
  *  2. Not allowed characters for 16 bit dchars (0xFFFE and 0xFEFF)
  *  3. Unknown compression ID
- *  4. Emptyness of string if ID is 0 or length is 0
- *  5. String legth mismatch
+ *  4. Emptiness of string if ID is 0 or length is 0
+ *  5. String length mismatch
  *
  * \param[in] in dstring for check
  * \param[in] field_size size of dstring field
@@ -585,7 +587,7 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
     }
 
     if(empty_flag || (length == 0 && no_length == 0)) {
-        // Check for emptyness
+        // Check for emptiness
         dbg("Empty check\n");
         for(int i = 0; i < (int)field_size; i += stepping) {
             if(in[i] != 0) {
@@ -605,7 +607,7 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
             uint8_t eol_flag = 0xFF;
             for(int i = 1; i < (int)(field_size-1); i += stepping) {
                 // We need to check if character is 0.
-                // For 8bit: we check character twice to keep code simplicity.
+                // For 8bit: we check character twice to keep code simple.
                 // For 16bit: we check character i and i+1
                 // 
                 // If hole (NULL character) detected, eol_flag is set.
@@ -634,7 +636,7 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
         }
 
         // Check for valid characters. Only for 16 bit makes sense.
-        // All uincode 1.1 characters are valid. Only endinness codes are invalid (0xFFFE and 0xFEFF)
+        // All Unicode 1.1 characters are valid. Only endianness codes are invalid (0xFFFE and 0xFEFF)
         if(stepping == 2) {
             dbg("Invalid chars check\n");
             for(int i = 1; i < (int)(field_size-1); i += stepping) {
@@ -651,15 +653,15 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
 /**
  * \brief UDF VRS detection function
  *
- * This function is trying to find VRS at sector 16.
- * It also do first attempt to guess sectorsize.
+ * This function tries to find VRS at sector 16.
+ * It also makes the first attempt to guess sectorsize.
  *
  * \param[in] *dev memory mapped device array
  * \param[in,out] *sectorsize found sectorsize candidate
  * \param[in] devsize size of whole device in bytes
- * \param[in] force_sectorsize if -B param is used, this flag should be set
+ * \param[in] force_sectorsize if -b param is used, this flag should be set
  *                                and sectorsize should be used automatically.
- * \return 0 -- UDF succesfully detected, sectorsize candidate found
+ * \return 0 -- UDF successfully detected, sectorsize candidate found
  * \return -1 -- found BOOT2 or CDW02. Unsupported for now
  * \return 1 -- UDF not detected 
  */
@@ -795,7 +797,8 @@ uint64_t count_used_bits(struct filesystemStats *stats) {
 /**
  * \brief Locate AVDP on device and store it
  *
- * This function searches AVDP at its positions. If it finds it, store it to udf_disc structure to required position by type parameter.
+ * This function checks for AVDP at a specified well-known position.
+ * If found, the AVDP is stored to the appropriate place in the udf_disc structure.
  *
  * It also determine sector size, since AVDP have fixed position. 
  *
@@ -841,7 +844,7 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint
             position = devsize-ssize-256*ssize; //Third AVDP can be at last LSN-256
         } else {
             position = ssize*512; //Unclosed disc have AVDP at sector 512
-            type = 0; //Save it to FIRST_AVDP positon
+            type = 0; //Save it to FIRST_AVDP position
         }
 
         dbg("DevSize: %" PRIu64 "\n", devsize);
@@ -880,7 +883,7 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint
         dbg("Tag Serial Num: %u\n", desc_tag.tagSerialNum);
         if(stats->AVDPSerialNum == 0xFFFF) { // Default state -> save first found 
             stats->AVDPSerialNum = desc_tag.tagSerialNum;
-        } else if(stats->AVDPSerialNum != desc_tag.tagSerialNum) { //AVDP serial numbers differs, no recovery support. UDF 2.1.6
+        } else if(stats->AVDPSerialNum != desc_tag.tagSerialNum) { //AVDP serial number differs, no recovery support. UDF 2.1.6
             stats->AVDPSerialNum = 0; //No recovery support
         }
 
@@ -980,7 +983,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
     position = dev[chunk]+offset;
     dbg("VDS Location: 0x%" PRIx64 ", chunk: %u, offset: 0x%x\n", location, chunk, offset);
 
-    // Go thru descriptors until TagIdent is 0 or amout is too big to be real
+    // Go thru descriptors until TagIdent is 0 or amount is too big to be real
     while(counter < VDS_STRUCT_AMOUNT) {
 
         // Read tag
@@ -1003,7 +1006,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
         switch(le16_to_cpu(descTag.tagIdent)) {
             case TAG_IDENT_PVD:
                 if(disc->udf_pvd[vds] != 0) {
-                    err("Structure PVD is already set. Probably error at tag or media\n");
+                    err("Structure PVD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1016,7 +1019,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 break;
             case TAG_IDENT_IUVD:
                 if(disc->udf_iuvd[vds] != 0) {
-                    err("Structure IUVD is already set. Probably error at tag or media\n");
+                    err("Structure IUVD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1030,7 +1033,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 break;
             case TAG_IDENT_PD:
                 if(disc->udf_pd[vds] != 0) {
-                    err("Structure PD is already set. Probably error at tag or media\n");
+                    err("Structure PD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1039,7 +1042,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 break;
             case TAG_IDENT_LVD:
                 if(disc->udf_lvd[vds] != 0) {
-                    err("Structure LVD is already set. Probably error at tag or media\n");
+                    err("Structure LVD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1059,7 +1062,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 break;
             case TAG_IDENT_USD:
                 if(disc->udf_usd[vds] != 0) {
-                    err("Structure USD is already set. Probably error at tag or media\n");
+                    err("Structure USD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1074,7 +1077,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 break;
             case TAG_IDENT_TD:
                 if(disc->udf_td[vds] != 0) {
-                    err("Structure TD is already set. Probably error at tag or media\n");
+                    err("Structure TD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
@@ -1088,7 +1091,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 unmap_chunk(dev, chunk, devsize);
                 return 0;
             default:
-                // Unkown TAG
+                // Unknown TAG
                 fatal("Unknown TAG found at %p. Ending.\n", position);
                 unmap_chunk(dev, chunk, devsize);
                 return -3;
@@ -1111,9 +1114,10 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
 /**
  * \brief Selects **MAIN_VDS** or **RESERVE_VDS** for required descriptor based on errors
  *
- * If some function needs some descriptor from VDS, it requires check if descriptor is structurally correct.
+ * If some function needs some descriptor from VDS, it requires a check that the descriptor is
+ * structurally correct.
  * This is already checked and stored in seq->main[vds].error and seq->reserve[vds].error.
- * This function search thru this sequence based on tagIdent and looks at errors when found.
+ * This function searches thru this sequence based on tagIdent and looks at errors when found.
  *
  * \param[in] *seq descriptor sequence
  * \param[in] tagIdent identifier to find
@@ -1134,7 +1138,7 @@ int get_correct(vds_sequence_t *seq, uint16_t tagIdent) {
 /**
  * \brief Loads Logical Volume Integrity Descriptor (LVID) and stores it at struct udf_disc
  *
- * Loads LVID descriptor to disc stucture. Beside that, it stores selected params in stats structure for 
+ * Loads LVID descriptor to disc structure. Beside that, it stores selected params in stats structure for
  * easier access.
  *
  * \param[in] *dev pointer to device array
@@ -1154,7 +1158,7 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
     uint64_t position = 0;
 
     if(disc->udf_lvid != 0) {
-        err("Structure LVID is already set. Probably error at tag or media\n");
+        err("Structure LVID is already set. Probably error in tag or media\n");
         return 4;
     }
     int vds = -1;
@@ -1235,9 +1239,9 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
 }
 
 /**
- * \brief Checks Logical Block Size stored in LVD with autodetected or declared size.
+ * \brief Checks Logical Block Size stored in LVD against autodetected or declared size.
  *
- * Compare LVD->LogicalBlockSize with detected or declared block size. If they matches, fsck can continue.
+ * Compare LVD->LogicalBlockSize with detected or declared block size. If they match, fsck can continue.
  * Otherwise it stops with fatal error, because medium is badly created and therefore unfixable.
  *
  * Return can be sum of its parts.
@@ -1265,11 +1269,11 @@ int check_blocksize(int fd, uint8_t **dev, struct udf_disc *disc, int blocksize,
 
     if(lvd_blocksize != blocksize) {
         if(force_sectorsize) {
-            err("User defined block size is not corresponding to detected. Aborting.\n");
+            err("User defined block size does not correspond to medium. Aborting.\n");
             return 16 | 4;
         }
 
-        err("Detected block size is not corresponding to stored in medium. Probably badly created UDF. Aborting.\n");
+        err("Detected block size does not correspond to medium. Probably badly created UDF. Aborting.\n");
         return 4;
     }
    
@@ -1321,8 +1325,8 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
 /**
  * \brief Marks used blocks in actual bitmap
  *
- * This function mark or unmark specified areas of block bitmap at stats->actPartitionBitmap
- * If medium is consistent, this bitmap should be same as declared (stats->expPartitionBitmap)
+ * This function marks or unmarks specified areas of the block bitmap at stats->actPartitionBitmap
+ * If medium is consistent, this bitmap should be same as the recorded one (stats->expPartitionBitmap)
  *
  * \param[in,out] *stats file system status structure
  * \param[in] lbn starting logical block of area
@@ -1402,7 +1406,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
 /**
  * \brief Loads File Set Descriptor and stores it at struct udf_disc
  *
- *  After storing also do check for dstring defects.
+ *  Also checks for dstring defects.
  *
  * \param[in] *dev pointer to device array
  * \param[out] *disc FSD is stored in udf_disc structure
@@ -1463,7 +1467,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     memcpy(disc->udf_fsd, dev[chunk]+offset, sizeof(struct fileSetDesc));
 
     if(le16_to_cpu(disc->udf_fsd->descTag.tagIdent) != TAG_IDENT_FSD) {
-        err("Error identifiing FSD. Tag ID: 0x%x\n", disc->udf_fsd->descTag.tagIdent);
+        err("Error identifying FSD. Tag ID: 0x%x\n", disc->udf_fsd->descTag.tagIdent);
         free(disc->udf_fsd);
         unmap_chunk(dev, chunk, devsize);
         return 8;
@@ -1593,7 +1597,7 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
         increment_used_space(stats, L_AD%lbSize == 0 ? L_AD/lbSize : L_AD/lbSize + 1, aedlbn);
         return 0;
     } else {
-        err("There should be AED, but is not\n");
+        err("Expected AED in LSN %u, but did not find one.\n", lsnBase + aedlbn);
     }
     return 4;
 }
@@ -1928,10 +1932,10 @@ static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc
 /**
  * \brief FID parsing function
  *
- * This function parses via FIDs. It continues to its FE using get_file() function.
- * Checks and fixes *Unique ID*, *Serial Numbers* or unfinished writings.
+ * This function parses a FID. It continues to its FE using get_file() function.
+ * Checks and fixes *Unique ID*, *Serial Numbers* or unfinished writing.
  *
- * This function is complement to get_file() and translate_fid().
+ * This function is a complement to get_file() and translate_fid().
  *
  * \param[in,out] *dev memory mapped device
  * \param[in] *disc udf_disc structure
@@ -2063,7 +2067,8 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                 }
                 int fixuuid = 0;
                 if(uuid == 0) {
-                    err("(%s) FID Unique ID is 0. There should be %" PRIu64 ".\n", info.filename, stats->actUUID);
+                    err("(%s) FID Unique ID is 0. Next available is %" PRIu64 ".\n", info.filename,
+                        stats->actUUID);
                     if(interactive) {
                         if(prompt("Fix it? [Y/n] ")) {
                             fixuuid = 1;
@@ -2113,7 +2118,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                                           depth, uuid, info, seq);
                 if(tmp_status == 32) { //32 means delete this FID
                     fid->fileCharacteristics |= FID_FILE_CHAR_DELETED; //Set deleted flag
-                    memset(&(fid->icb), 0, sizeof(long_ad)); //clear ICB according ECMA-167r3, 4/14.4.5
+                    memset(&(fid->icb), 0, sizeof(long_ad)); //clear ICB according to ECMA-167r3, 4/14.4.5
                     fid->descTag.descCRC = calculate_crc(fid, flen+padding);             
                     fid->descTag.tagChecksum = calculate_checksum(fid->descTag);
                     dbg("Location: %u\n", fid->descTag.tagLocation);
@@ -2135,7 +2140,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                     } else {
                         err("(%s) FID parent FE not found.\n", info.filename);
                     }
-                    imp("(%s) Unifinished file was removed.\n", info.filename);
+                    imp("(%s) Unfinished file was removed.\n", info.filename);
 
                     tmp_status = 1;    
                 }
@@ -2170,11 +2175,11 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
 /**
  * \brief Pair function capturing used space and its position
  *
- * This function is pair with decrement_used_space()
+ * This function is a dual of decrement_used_space()
  * 
  * It only stores information about used:free space ration and positions
  *
- * \param[in,out] *stats file system status contatins fields used for free space counting and bitmaps for position marking
+ * \param[in,out] *stats file system status contains fields used for free space counting and bitmaps for position marking
  * \param[in] increment size of space to mark
  * \param[in] its position
  */
@@ -2191,11 +2196,11 @@ void increment_used_space(struct filesystemStats *stats, uint64_t increment, uin
 /**
  * \brief Pair function capturing used space and its position
  *
- * This function is pair with increment_used_space()
+ * This function is a dual of increment_used_space()
  * 
  * It only stores information about used:free space ration and positions
  *
- * \param[in,out] *stats file system status contatins fields used for free space counting and bitmaps for position marking
+ * \param[in,out] *stats file system status contains fields used for free space counting and bitmaps for position marking
  * \param[in] increment size of space to mark
  * \param[in] its position
  */
@@ -2212,11 +2217,11 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t increment, uin
 /**
  * \brief (E)FE parsing function
  *
- * This function parses thru file tree, made of FE. It is complement to inspect_fid() function, which parses FIDs.
+ * This function parses thru file tree, made of FE. It complements inspect_fid(), which parses FIDs.
  * 
- * It fixes *Unifinished writes*, *File modifiacation timestamps* (or records them for LVID fix, depending on error) and *Unique ID*.
+ * It fixes *Unfinished writes*, *File modification timestamps* (or records them for LVID fix, depending on error) and *Unique ID*.
  *
- * When it finds directory, it calls inspect_fid() to process its contents.
+ * When it finds a directory, it calls walk_directory() to process its contents.
  *
  * \param[in,out] *dev memory mapped device
  * \param[in] *disc udf_disc structure
@@ -2417,7 +2422,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
             double cts = 0;
             if((cts = compare_timestamps(stats->LVIDtimestamp, ext ? efe->modificationTime : fe->modificationTime)) < 0) {
-                err("(%s) File timestamp is later than LVID timestamp. LVID need to be fixed.\n", info.filename);
+                err("(%s) File timestamp is later than LVID timestamp. LVID needs to be fixed.\n", info.filename);
 #ifdef DEBUG
                 err("CTS: %f\n", cts);
 #endif
@@ -2713,7 +2718,7 @@ uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, u
  * \brief Support function for appending error to seq structure
  *
  * \param[in,out] seq VDS sequence
- * \param[in] tagIdent identifer of descriptor to append
+ * \param[in] tagIdent identifier of descriptor to append
  * \param[in] vds VDS to search
  * \param[in] error to append
  *
@@ -2789,7 +2794,8 @@ uint32_t get_tag_location(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds
 /**
  * \brief VDS verification structure
  *
- * This function go thru all VDS descriptors and checks them for checksum, CRC and position. Result are stored using append_error() function.
+ * This function go thru all VDS descriptors and check them for checksum, CRC and position.
+ * Results are stored using append_error() function.
  *
  * \param[in] *disc UDF disc structure
  * \param[in] vds VDS to search
@@ -2899,7 +2905,7 @@ int verify_vds(struct udf_disc *disc, vds_type_e vds, vds_sequence_t *seq, struc
 /**
  * \brief Copy descriptor from one position to another on medium
  *
- * Beside actual copy it also fixes declared position, CRC and checksum.
+ * Also fixes declared position, CRC and checksum of the new copy.
  *
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc structure
@@ -2979,7 +2985,7 @@ int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, 
     uint32_t offset = 0, chunk = 0;
     uint32_t chunksize = CHUNK_SIZE;
 
-    // Taget type to determine position on media
+    // Source type determines position on media
     if(source == 0) {
         sourcePosition = sectorsize*256; //First AVDP is on LSN=256
     } else if(source == 1) {
@@ -2987,10 +2993,10 @@ int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, 
     } else if(source == 2) {
         sourcePosition = devsize-sectorsize-256*sectorsize; //Third AVDP can be at last LSN-256
     } else {
-        sourcePosition = sectorsize*512; //Unclosed disc have AVDP at sector 512
+        sourcePosition = sectorsize*512; //Unclosed disc can have AVDP at sector 512
     }
 
-    // Taget type to determine position on media
+    // Target type determines position on media
     if(target == 0) {
         targetPosition = sectorsize*256; //First AVDP is on LSN=256
     } else if(target == 1) {
@@ -2998,7 +3004,7 @@ int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, 
     } else if(target == 2) {
         targetPosition = devsize-sectorsize-256*sectorsize; //Third AVDP can be at last LSN-256
     } else {
-        targetPosition = sectorsize*512; //Unclosed disc have AVDP at sector 512
+        targetPosition = sectorsize*512; //Unclosed disc can have AVDP at sector 512
         type = FIRST_AVDP; //Save it to FIRST_AVDP positon
     }
 
@@ -3062,16 +3068,16 @@ int fix_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, ui
     uint32_t offset = 0, chunk = 0;
     uint32_t chunksize = CHUNK_SIZE;
 
-    // Taget type to determine position on media
+    // Target type determines position on media
     if(target == 0) {
-        targetPosition = sectorsize*256; //First AVDP is on LSN=256
+        targetPosition = sectorsize*256; //First AVDP is at LSN=256
     } else if(target == 1) {
-        targetPosition = devsize-sectorsize; //Second AVDP is on last LSN
+        targetPosition = devsize-sectorsize; //Second AVDP is at last LSN
     } else if(target == 2) {
         targetPosition = devsize-sectorsize-256*sectorsize; //Third AVDP can be at last LSN-256
     } else {
         targetPosition = sectorsize*512; //Unclosed disc have AVDP at sector 512
-        type = FIRST_AVDP; //Save it to FIRST_AVDP positon
+        type = FIRST_AVDP; //Save it to FIRST_AVDP position
     }
 
     dbg("DevSize: %" PRIu64 "\n", devsize);
@@ -3143,7 +3149,8 @@ char * descriptor_name(uint16_t descIdent) {
 /**
  * \brief Fix VDS sequence 
  *
- * This function go thru VDS and if find error, check second VDS. If secondary is ok, copy it, if not, report unrecoverable error.
+ * This function checks the VDS; if an error is found, the second VDS is checked.
+ * If secondary is ok, copy it, if not, report unrecoverable error.
  *
  * \param[in,out] *dev memory mapped medium
  * \param[in,out] *disc UDF disc structure
@@ -3171,7 +3178,7 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size
         if(seq->main[i].error != 0 && seq->reserve[i].error != 0) {
             //Both descriptors are broken
             //TODO It can be possible to reconstruct some descriptors, but not all. 
-            err("[%d] Both descriptors are broken. Maybe not able to continue later.\n",i);     
+            err("[%d] Both descriptors are broken. May not be able to continue later.\n",i);
         } else if(seq->main[i].error != 0) {
             //Copy Reserve -> Main
             if(interactive) {
@@ -3233,7 +3240,7 @@ static const unsigned char BitsSetTable256[256] =
 /**
  * \brief Fix PD Partition Header contents
  *
- * At this moment it fixes only SBD, because no other descriptors were found.
+ * At this moment it only fixes SBD, because no other space descriptors are supported.
  *
  * \param[in,out] *dev memory mapped medium
  * \param[in] *disc UDF disc
@@ -3316,7 +3323,7 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_
 /**
  * \brief Get PD Partition Header contents
  *
- * At this moment handles only SBD, because none other was found.
+ * At this moment it handles SBD only, because other space descriptors are not supported.
  *
  * \param[in] *dev memory mapped device
  * \param[in] *disc UDF disc
@@ -3465,9 +3472,9 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint
 /**
  * \brief Fix LVID values
  *
- * This function fixes only values of LVID. It is not able to fix structurally broken LVID (wrong CRC/checksum).
+ * This function fixes only values within LVID. It is not able to fix a structurally broken LVID (wrong CRC/checksum).
  *
- * Fixes opened intergrity type, timestamps, amounts of files/directories, free space tables.
+ * Fixes opened integrity type, timestamps, amount of files/directories, free space tables.
  *
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc
@@ -3508,7 +3515,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, siz
     // Fix PD too
     fix_pd(fd, dev, disc, devsize, sectorsize, stats, seq);
 
-    // Fix files/dir amounts
+    // Fix file/dir counts
     impUse->numOfFiles = stats->countNumOfFiles;
     impUse->numOfDirs = stats->countNumOfDirs;
 
