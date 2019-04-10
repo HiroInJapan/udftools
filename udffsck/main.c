@@ -60,7 +60,7 @@
 void user_interrupt(int dummy) {
     (void)dummy;
     warn("\nUser interrupted operation. Exiting.\n");
-    exit(32);
+    exit(ESTATUS_USER_CANCEL);
 }
 
 /**
@@ -72,7 +72,7 @@ void user_interrupt(int dummy) {
 void segv_interrupt(int dummy) {
     (void)dummy;
     fatal("Unexpected error (SEGV), please report it. More info at man page. Exiting.\n");
-    exit(8);
+    exit(ESTATUS_OPERATIONAL_ERROR);
 }
 
 /**
@@ -84,7 +84,7 @@ void segv_interrupt(int dummy) {
 void sigbus_interrupt(int dummy) {
     (void)dummy;
     fatal("Medium changed size during fsck run. Is somebody manipulating it? Exiting.\n");
-    exit(8);
+    exit(ESTATUS_OPERATIONAL_ERROR);
 }
 
 /**
@@ -180,7 +180,7 @@ int main(int argc, char *argv[]) {
 
     if(path == NULL) {
         err("No medium given. Use -h for help.\n");
-        exit(16);
+        exit(ESTATUS_USAGE);
     }
 
     if(blocksize > 0) {
@@ -199,7 +199,7 @@ int main(int argc, char *argv[]) {
     dbg("%s\n", mnt.mnt_fsname);
     if(strcmp(mnt.mnt_fsname, path) == 0) { //Match
     err("Medium is mounted, therefore cannot be checked. Exiting.\n");
-    exit(16);
+    exit(ESTATUS_USAGE);
     }
     }
 
@@ -215,7 +215,7 @@ int main(int argc, char *argv[]) {
 
     if((fd = open(path, flags, 0660)) == -1) {
         fatal("Error opening %s: %s.", path, strerror(errno));
-        exit(16);
+        exit(ESTATUS_USAGE);
     } else {
         int fd2;
         int flags2;
@@ -224,14 +224,14 @@ int main(int argc, char *argv[]) {
 
         if (fstat(fd, &stat) != 0) {
             fatal("Cannot stat device '%s': %s\n", path, strerror(errno));
-            exit(16);
+            exit(ESTATUS_USAGE);
         }
 
         flags2 = flags; 
         if (snprintf(filename2, sizeof(filename2), "/proc/self/fd/%d", fd) >= (int)sizeof(filename2))
         {
             fatal("Cannot open device '%s': %s\n", path, strerror(ENAMETOOLONG));
-            exit(16);
+            exit(ESTATUS_USAGE);
         }
 
         // Re-open block device with O_EXCL mode which fails when device is already mounted
@@ -245,7 +245,7 @@ int main(int argc, char *argv[]) {
             {
                 error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or udffsck is already running";
                 fatal("Cannot open device '%s': %s\n", path, error);
-                exit(16);
+                exit(ESTATUS_USAGE);
             }
 
             // Fallback to original filename when /proc is not available,
@@ -255,7 +255,7 @@ int main(int argc, char *argv[]) {
             {
                 error = (errno != EBUSY) ? strerror(errno) : "Device is mounted or udffsck is already running";
                 fatal("Cannot open device '%s': %s\n", path, error);
-                exit(16);
+                exit(ESTATUS_USAGE);
             }
         }
 
@@ -266,14 +266,14 @@ int main(int argc, char *argv[]) {
 
     if((fp = fopen(path, "r")) == NULL) {
         fatal("Error opening %s: %s.", path, strerror(errno));
-        exit(16);
+        exit(ESTATUS_USAGE);
     }
 
     // Lock medium to ensure no-one is going to change during our operation.
     // Make nonblocking, so it will fail when medium is already locked.
     if(flock(fd, LOCK_EX | LOCK_NB)) { 
         fatal("Error locking %s, %s. Is another process using it?\n", path, strerror(errno));
-        exit(16);
+        exit(ESTATUS_USAGE);
     }
 
     note("FD: 0x%x\n", fd);
@@ -281,10 +281,10 @@ int main(int argc, char *argv[]) {
     if(fseeko(fp, 0 , SEEK_END) != 0) {
         if(errno == EBADF) {
             err("Medium is not seekable. Aborting.\n");
-            exit(16);
+            exit(ESTATUS_USAGE);
         } else {
             err("Unknown seek error (errno: %d). Aborting.\n", errno);
-            exit(16);
+            exit(ESTATUS_USAGE);
         }
     } 
     devsize = ftello(fp);
@@ -313,7 +313,7 @@ int main(int argc, char *argv[]) {
         source = FIRST_AVDP; // Unclosed medium has only one AVDP and that is saved at first position.
         if(status) {
             err("AVDP is broken. Aborting.\n");
-            exit(4);
+            exit(ESTATUS_UNCORRECTED_ERRORS);
         }
     } else { //Normal medium
         seq->anchor[0].error = get_avdp(fd, dev, &disc, &blocksize, devsize, FIRST_AVDP, force_sectorsize, &stats); //try load FIRST AVDP
@@ -354,7 +354,7 @@ int main(int argc, char *argv[]) {
                 err("All AVDP are broken or wrong block size was entered. Try running without -b option. Aborting.\n");
             else
                 err("All AVDP are broken. Aborting.\n");
-            exit(4);
+            exit(ESTATUS_UNCORRECTED_ERRORS);
         }
     }
 
@@ -362,13 +362,13 @@ int main(int argc, char *argv[]) {
 
     if(blocksize == -1) {
         err("Device blocksize is not defined. Please define it with -b BLOCKSIZE parameter\n");
-        exit(16);
+        exit(ESTATUS_USAGE);
     }
 
     // Correct blocksize MUST be blocksize%512 == 0. We keep definitive list for now.
     if(!((blocksize == 512) | (blocksize == 1024) | (blocksize == 2048) | (blocksize == 4096))) {
         err("Invalid blocksize. Supported values are 512, 1024, 2048, and 4096.\n");
-        exit(16);
+        exit(ESTATUS_USAGE);
     }
 
     note("\nTrying to load first VDS\n");
@@ -383,14 +383,14 @@ int main(int argc, char *argv[]) {
 
     //Check if blocksize matches. If not, exit.
     int blocksize_status = check_blocksize(fd, dev, &disc, blocksize, force_sectorsize, seq);
-    if(blocksize_status != 0)
+    if(blocksize_status != ESTATUS_OK)
         exit(status | blocksize_status);
 
 
     status |= get_lvid(fd, dev, &disc, blocksize, devsize, &stats, seq); //load LVID
     if(stats.minUDFReadRev > MAX_VERSION){
         err("Medium UDF revision is %04x and we are able to check up to %04x\n", stats.minUDFReadRev, MAX_VERSION);
-        exit(8);
+        exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
 #ifdef PRINT_DISC
@@ -401,17 +401,17 @@ int main(int argc, char *argv[]) {
 
     if(get_pd(fd, dev, &disc, blocksize, devsize, &stats, seq)) {
         err("PD error\n");
-        exit(8);
+        exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
     uint32_t lbnlsn = 0;
     dbg("STATUS: 0x%02x\n", status);
     status |= get_fsd(fd, dev, &disc, blocksize, devsize, &lbnlsn, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
-    if(status >= 8) {
+    if(status >= ESTATUS_OPERATIONAL_ERROR) {
         err("Unable to continue without FSD. Consider submitting a bug report. Exiting.\n");
         exit(status);
-    } else if(status >= 4) {
+    } else if(status >= ESTATUS_UNCORRECTED_ERRORS) {
         err("Unable to continue without FSD. Medium seems unrecoverable. Exiting.\n");
         exit(status);
     }
@@ -521,7 +521,7 @@ int main(int argc, char *argv[]) {
             target2 = SECOND_AVDP;
         } else {
             err("Unrecoverable AVDP failure. Aborting.\n");
-            exit(4);
+            exit(ESTATUS_UNCORRECTED_ERRORS);
         }
 
         if(target1 >= 0)
@@ -666,17 +666,17 @@ int main(int argc, char *argv[]) {
 
     //---------------- Error & Fix Status -------------
     if(error_status != 0) {
-        status |= 4; //Errors remained unfixed
+        status |= ESTATUS_UNCORRECTED_ERRORS; //Errors remained unfixed
     }
 
     if(fix_status != 0) {
-        status |= 1; // Errors were fixed
+        status |= ESTATUS_CORRECTED_ERRORS; // Errors were fixed
     }
 
-    if(status <= 1) {
+    if(status <= ESTATUS_CORRECTED_ERRORS) {
         msg("Filesystem clean.\n");
     }
-    else if(status == 1) {
+    else if(status == ESTATUS_CORRECTED_ERRORS) {
         msg("Filesystem errors were fixed.\n");
     }
     //---------------- Clean up -----------------

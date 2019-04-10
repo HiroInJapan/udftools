@@ -34,6 +34,13 @@
 #define BLOCK_SIZE 2048 ///< Minimal VRS search block size
 #define CHUNK_SIZE ((uint32_t)0x800000) ///< mmap() the device in multiples of this many bytes
 
+// Exit status bitmask
+#define ESTATUS_OK                         0
+#define ESTATUS_CORRECTED_ERRORS           (1U << 0)  // 1
+#define ESTATUS_UNCORRECTED_ERRORS         (1U << 2)  // 4
+#define ESTATUS_OPERATIONAL_ERROR          (1U << 3)  // 8
+#define ESTATUS_USAGE                      (1U << 4)  // 16
+#define ESTATUS_USER_CANCEL                (1U << 5)  // 32
 
 typedef enum {
     FIRST_AVDP = 0, 

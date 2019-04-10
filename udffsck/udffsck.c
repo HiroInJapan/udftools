@@ -533,9 +533,9 @@ uint8_t dstring_error(char * string_name, uint8_t e_code) {
             }
         }
 
-        return 4; 
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
-    return 0;
+    return ESTATUS_OK;
 }
 
 /**
@@ -1147,8 +1147,8 @@ int get_correct(vds_sequence_t *seq, uint16_t tagIdent) {
  * \param[in] devsize size of whole device in bytes
  * \param[out] *stats file system status
  * \param[in] *seq descriptor sequence
- * \return 0 everything ok
- * \return 4 structure is already set or no correct LVID found
+ * \return ESTATUS_OK                 everything ok
+ * \return ESTATUS_UNCORRECTED_ERRORS structure is already set or no correct LVID found
  */
 int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
              struct filesystemStats *stats, vds_sequence_t *seq ) {
@@ -1159,12 +1159,12 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
 
     if(disc->udf_lvid != 0) {
         err("Structure LVID is already set. Probably error in tag or media\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
     int vds = -1;
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
         err("No correct LVD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
 
     uint32_t loc = disc->udf_lvd[vds]->integritySeqExt.extLocation;
@@ -1235,7 +1235,7 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
     }
 
     unmap_chunk(dev, chunk, devsize); 
-    return 0; 
+    return ESTATUS_OK;
 }
 
 /**
@@ -1252,16 +1252,16 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
  * \param[in] blocksize device logical sector size
  * \param[in] force_blocksize 1 represent user defined sector size
  * \param[in] *seq descriptor sequence
- * \return 0 blocksize matches
- * \return 4 blocksize differs from detected one
- * \return 16 blocksize differs from declared one
+ * \return ESTATUS_OK                 blocksize matches
+ * \return ESTATUS_UNCORRECTED_ERRORS blocksize differs from detected one
+ * \return ESTATUS_USAGE              blocksize differs from declared one
  */
 int check_blocksize(int fd, uint8_t **dev, struct udf_disc *disc, int blocksize, int force_sectorsize, vds_sequence_t *seq) {
 
     int vds = -1;
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
         err("No correct LVD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
 
     int lvd_blocksize = disc->udf_lvd[vds]->logicalBlockSize;
@@ -1270,18 +1270,18 @@ int check_blocksize(int fd, uint8_t **dev, struct udf_disc *disc, int blocksize,
     if(lvd_blocksize != blocksize) {
         if(force_sectorsize) {
             err("User defined block size does not correspond to medium. Aborting.\n");
-            return 16 | 4;
+            return ESTATUS_USAGE | ESTATUS_UNCORRECTED_ERRORS;
         }
 
         err("Detected block size does not correspond to medium. Probably badly created UDF. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
    
     dbg("Blocksize matches.\n"); 
 
     (void)dev;
     (void)fd;
-    return 0; 
+    return ESTATUS_OK;
 }
 /**
  * \brief Select various volume identifiers and store them at stats structure
@@ -1430,7 +1430,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
 
     if((vds=get_correct(seq, TAG_IDENT_PD)) < 0) {
         err("No correct PD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
     dbg("PD partNum: %u\n", disc->udf_pd[vds]->partitionNumber);
     uint32_t lsnBase = 0;
@@ -1442,7 +1442,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     vds = -1;
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
         err("No correct LVD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
     uint32_t lbSize = le32_to_cpu(disc->udf_lvd[vds]->logicalBlockSize); 
 
@@ -1470,7 +1470,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
         err("Error identifying FSD. Tag ID: 0x%x\n", disc->udf_fsd->descTag.tagIdent);
         free(disc->udf_fsd);
         unmap_chunk(dev, chunk, devsize);
-        return 8;
+        return ESTATUS_OPERATIONAL_ERROR;
     }
 
     size_t ident_max_size = sizeof(disc->udf_fsd->logicalVolIdent);
@@ -1512,7 +1512,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     print_hex_array(disc->udf_fsd, sizeof(struct fileSetDesc));
 #endif
 
-    return 0;
+    return ESTATUS_OK;
 }
 
 /**
@@ -1553,21 +1553,21 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
         //checksum
         if(!checksum(aed->descTag)) {
             err("AED checksum failed\n");
-            *status |= 4; 
+            *status |= ESTATUS_UNCORRECTED_ERRORS;
             return 4;
         }
 
         //CRC
         if(crc(aed, aed->descTag.descCRCLength + sizeof(tag))) {
             err("AED CRC failed\n");
-            *status |= 4;
+            *status |= ESTATUS_UNCORRECTED_ERRORS;
             return 4;
         }
 
         // position
         if(check_position(aed->descTag, aedlbn)) {
             err("AED position differs\n");
-            *status |= 4;
+            *status |= ESTATUS_UNCORRECTED_ERRORS;
         }
 
         uint32_t L_AD = aed->lengthAllocDescs;
@@ -1874,7 +1874,7 @@ static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc
     } 
     dbg("2 FID inspection over.\n");
 
-    if(tempStatus & 0x01) { // FID(s) were fixed - write dirContent back out
+    if(tempStatus & ESTATUS_CORRECTED_ERRORS) { // FID(s) were fixed - write dirContent back out
         prevExtLength = 0;
         for(int i = 0; i < nAD; i++) {
             uint32_t extStartLBN;
@@ -2038,9 +2038,9 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                 }
                 imp("(%s) Tag Serial Number was fixed.\n", info.filename);
                 sync_chunk(dev, chunk, devsize);
-                *status |= 1;
+                *status |= ESTATUS_CORRECTED_ERRORS;
             } else {
-                *status |= 4;
+                *status |= ESTATUS_UNCORRECTED_ERRORS;
             }
         }
 
@@ -2073,13 +2073,13 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                         if(prompt("Fix it? [Y/n] ")) {
                             fixuuid = 1;
                         } else {
-                            *status |= 4;
+                            *status |= ESTATUS_UNCORRECTED_ERRORS;
                         }
                     }       
                     if(autofix) {
                         fixuuid = 1;
                     } else {
-                        *status |= 4;
+                        *status |= ESTATUS_UNCORRECTED_ERRORS;
                     }
                     if(fixuuid) {
                         uuid = stats->actUUID;
@@ -2109,7 +2109,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
 
                         }
                         imp("(%s) UUID was fixed.\n", info.filename);
-                        *status |= 1;
+                        *status |= ESTATUS_CORRECTED_ERRORS;
                     }
                 }
                 dbg("ICB to follow.\n");
@@ -2142,7 +2142,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                     }
                     imp("(%s) Unfinished file was removed.\n", info.filename);
 
-                    tmp_status = 1;    
+                    tmp_status = ESTATUS_CORRECTED_ERRORS;
                 }
                 *status |= tmp_status;
                 dbg("Return from ICB\n"); 
@@ -2150,7 +2150,8 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
         } else {
             dbg("DELETED FID\n");
             uint8_t *fileIdent = fid->impUseAndFileIdent + fid->lengthOfImpUse;
-            *status |= check_dstring(fileIdent, fid->lengthFileIdent) ? 4 : 0; //FIXME expand for fixing later.
+            *status |= check_dstring(fileIdent, fid->lengthFileIdent) ? ESTATUS_UNCORRECTED_ERRORS
+                                                                      : ESTATUS_OK; //FIXME expand for fixing later.
             print_file_info(info, depth);
         }
         dbg("Len: %u, padding: %u\n", flen, padding);
@@ -2250,7 +2251,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
         err("No correct LVD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
 
     uint32_t lbSize = le32_to_cpu(disc->udf_lvd[vds]->logicalBlockSize);  
@@ -2272,7 +2273,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
     descTag = (tag *)(dev[chunk]+offset);
     if(!checksum(*descTag)) {
         err("Tag checksum failed. Unable to continue.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
 
     dbg("global FE increment.\n");
@@ -2299,7 +2300,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                     if(cont == 0) {
                         unmap_chunk(dev, chunk, devsize); 
-                        return 4;
+                        return ESTATUS_UNCORRECTED_ERRORS;
                     }
                 }
                 ext = 1;
@@ -2314,7 +2315,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                     if(cont == 0) {
                         unmap_chunk(dev, chunk, devsize); 
-                        return 4;
+                        return ESTATUS_UNCORRECTED_ERRORS;
                     }
                 }
             }
@@ -2335,9 +2336,9 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                         descTag->descCRC = calculate_crc(fe, sizeof(struct fileEntry) + le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs));
                     }
                     descTag->tagChecksum = calculate_checksum(*descTag);
-                    status |= 1;
+                    status |= ESTATUS_CORRECTED_ERRORS;
                 } else {
-                    status |= 4;
+                    status |= ESTATUS_UNCORRECTED_ERRORS;
                 }
             }
             dbg("\nFE, LSN: %u, EntityID: %s ", lsn, fe->impIdent.ident);
@@ -2440,7 +2441,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     if(prompt("Fix it (set Unique ID to %u, value according to FID)? [Y/n] ", uuid) != 0) {
                         fixuuid = 1;
                     } else {
-                        status |= 4;
+                        status |= ESTATUS_UNCORRECTED_ERRORS;
                     }
                 }
                 if(autofix) {
@@ -2459,7 +2460,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     fe->descTag.descCRC = calculate_crc(fe, sizeof(struct fileEntry) + le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs));
                     fe->descTag.tagChecksum = calculate_checksum(fe->descTag);
                 }
-                status |= 1;
+                status |= ESTATUS_CORRECTED_ERRORS;
             }
 
             dbg("FC: %04u DC: %04u ", stats->countNumOfFiles, stats->countNumOfDirs);
@@ -2635,7 +2636,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     }
                 }
                 dbg("2 FID inspection over.\n");
-                if (tempStatus & 1) {
+                if (tempStatus & ESTATUS_CORRECTED_ERRORS) {
                     // FID(s) were fixed - update FE/EFE CRC
                     descTag = &efe->descTag;  // same as &fe->descTag
                     descTag->descCRC = udf_crc((uint8_t *)(descTag + 1),  descTag->descCRCLength, 0);
@@ -2677,7 +2678,7 @@ uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, u
     int vds = -1;
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
         err("No correct LVD found. Aborting.\n");
-        return 4;
+        return ESTATUS_UNCORRECTED_ERRORS;
     }
     dbg("VDS used: %d\n", vds);
 #ifdef MEMTRACE
@@ -3195,10 +3196,10 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size
                 warn("dest pos: 0x%x\n", position_main + i);
                 //                memcpy(position_main + i*sectorsize, position_reserve + i*sectorsize, sectorsize);
                 copy_descriptor(fd, dev, disc, devsize, sectorsize, position_reserve + i, position_main + i, sectorsize);
-                status |= 1;
+                status |= ESTATUS_CORRECTED_ERRORS;
             } else {
                 err("[%i] %s is broken.\n", i,descriptor_name(seq->reserve[i].tagIdent));
-                status |= 4;
+                status |= ESTATUS_UNCORRECTED_ERRORS;
             }
             fix = 0;
         } else if(seq->reserve[i].error != 0) {
@@ -3212,10 +3213,10 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size
             if(fix) {
                 warn("[%i] Fixing Reserve %s\n", i,descriptor_name(seq->main[i].tagIdent));
                 copy_descriptor(fd, dev, disc, devsize, sectorsize, position_reserve + i, position_main + i, sectorsize);
-                status |= 1;
+                status |= ESTATUS_CORRECTED_ERRORS;
             } else {
                 err("[%i] %s is broken.\n", i,descriptor_name(seq->main[i].tagIdent));
-                status |= 4;
+                status |= ESTATUS_UNCORRECTED_ERRORS;
             }
             fix = 0;
         } else {

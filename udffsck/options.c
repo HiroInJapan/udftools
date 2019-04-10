@@ -91,7 +91,7 @@ void usage(void)
            "  32 - Check was interrupted by user request\n"
           /* "  128 - Shared library error"*/
            "\n");
-    exit(32);
+    exit(ESTATUS_USER_CANCEL);
 }
 
 /**
