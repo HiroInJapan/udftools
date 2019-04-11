@@ -436,7 +436,7 @@ void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * f
         }
 
         fatal("\tError mapping: %s.\n", strerror(errno));
-        exit(8);
+        exit(ESTATUS_OPERATIONAL_ERROR);
     }
 #ifdef MEMTRACE
     dbg("\tChunk #%u allocated, pointer: %p, offset 0x%" PRIx64 "\n", chunk, dev[chunk], (uint64_t)(chunk)*chunksize);
@@ -496,7 +496,7 @@ static void map_raw(int fd, uint8_t **ptr, uint64_t offset, size_t size, uint64_
         }
 
         fatal("\tError mapping: %s.\n", strerror(errno));
-        exit(8); 
+        exit(ESTATUS_OPERATIONAL_ERROR);
     }
 #ifdef MEMTRACE
     dbg("\tArea allocated, pointer: %p, offset 0x%" PRIx64 "\n", ptr, offset);
