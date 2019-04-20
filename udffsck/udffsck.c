@@ -455,7 +455,7 @@ void unmap_raw(uint8_t **ptr, uint32_t offset, size_t size) {
         dbg("Going to unmap area, ptr: %p\n", ptr);
 #endif
         munmap(*ptr, size);
-        ptr = NULL;
+        *ptr = NULL;
         dbg("\tArea unmapped\n");
     } else {
         dbg("\tArea is already unmapped\n");
