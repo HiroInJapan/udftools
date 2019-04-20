@@ -959,12 +959,14 @@ int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint
 int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
             avdp_type_e avdp, vds_type_e vds, vds_sequence_t *seq) {
     uint8_t *position;
+    uint8_t *raw = NULL;
     int8_t counter = 0;
     tag descTag;
     uint64_t location = 0;
     uint32_t chunksize = CHUNK_SIZE;
     uint32_t chunk = 0;
     uint32_t offset = 0;
+    uint32_t descLen;
 
     // Go to first address of VDS
     switch(vds) {
@@ -1005,41 +1007,47 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
         // What kind of descriptor is that?
         switch(le16_to_cpu(descTag.tagIdent)) {
             case TAG_IDENT_PVD:
+                descLen = sizeof(struct primaryVolDesc);
                 if(disc->udf_pvd[vds] != 0) {
                     err("Structure PVD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
-                disc->udf_pvd[vds] = malloc(sizeof(struct primaryVolDesc)); // Prepare memory
-                memcpy(disc->udf_pvd[vds], position, sizeof(struct primaryVolDesc)); 
+                disc->udf_pvd[vds] = malloc(descLen); // Prepare memory
+                memcpy(disc->udf_pvd[vds], position, descLen); 
                 dbg("VolNum: %u\n", disc->udf_pvd[vds]->volDescSeqNum);
                 dbg("pVolNum: %u\n", disc->udf_pvd[vds]->primaryVolDescNum);
                 dbg("seqNum: %u\n", disc->udf_pvd[vds]->volSeqNum);
                 dbg("predLoc: %u\n", disc->udf_pvd[vds]->predecessorVolDescSeqLocation);
                 break;
+
             case TAG_IDENT_IUVD:
+                descLen = sizeof(struct impUseVolDesc);
                 if(disc->udf_iuvd[vds] != 0) {
                     err("Structure IUVD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
                 dbg("Store IUVD\n");
-                disc->udf_iuvd[vds] = malloc(sizeof(struct impUseVolDesc)); // Prepare memory
+                disc->udf_iuvd[vds] = malloc(descLen); // Prepare memory
 #ifdef MEMTRACE
                 dbg("Malloc ptr: %p\n", disc->udf_iuvd[vds]);
 #endif
-                memcpy(disc->udf_iuvd[vds], position, sizeof(struct impUseVolDesc));
+                memcpy(disc->udf_iuvd[vds], position, descLen);
                 dbg("Stored\n"); 
                 break;
+
             case TAG_IDENT_PD:
+                descLen = sizeof(struct partitionDesc);
                 if(disc->udf_pd[vds] != 0) {
                     err("Structure PD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
-                disc->udf_pd[vds] = malloc(sizeof(struct partitionDesc)); // Prepare memory
-                memcpy(disc->udf_pd[vds], position, sizeof(struct partitionDesc)); 
+                disc->udf_pd[vds] = malloc(descLen); // Prepare memory
+                memcpy(disc->udf_pd[vds], position, descLen); 
                 break;
+
             case TAG_IDENT_LVD:
                 if(disc->udf_lvd[vds] != 0) {
                     err("Structure LVD is already set. Probably error in tag or media\n");
@@ -1051,8 +1059,13 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 struct logicalVolDesc *lvd;
                 lvd = (struct logicalVolDesc *)(position);
 
-                disc->udf_lvd[vds] = malloc(sizeof(struct logicalVolDesc)+lvd->mapTableLength); // Prepare memory
-                memcpy(disc->udf_lvd[vds], position, sizeof(struct logicalVolDesc)+lvd->mapTableLength);
+                descLen = sizeof(struct logicalVolDesc) + le32_to_cpu(lvd->mapTableLength);
+                disc->udf_lvd[vds] = malloc(descLen); // Prepare memory
+
+                map_raw(fd, &raw, (uint64_t)(chunk)*CHUNK_SIZE, descLen + offset, devsize);
+                memcpy(disc->udf_lvd[vds], raw+offset, descLen);
+                unmap_raw(&raw, (uint64_t)(chunk)*CHUNK_SIZE, descLen + offset);
+
                 dbg("NumOfPartitionMaps: %u\n", disc->udf_lvd[vds]->numPartitionMaps);
                 dbg("MapTableLength: %u\n", disc->udf_lvd[vds]->mapTableLength);
                 for(int i=0; i<(int)(le32_to_cpu(lvd->mapTableLength)); i++) {
@@ -1060,6 +1073,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 }
                 note("\n");
                 break;
+
             case TAG_IDENT_USD:
                 if(disc->udf_usd[vds] != 0) {
                     err("Structure USD is already set. Probably error in tag or media\n");
@@ -1072,24 +1086,33 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
                 dbg("VolDescNum: %u\n", usd->volDescSeqNum);
                 dbg("NumAllocDesc: %u\n", usd->numAllocDescs);
 
-                disc->udf_usd[vds] = malloc(sizeof(struct unallocSpaceDesc)+(usd->numAllocDescs)*sizeof(extent_ad)); // Prepare memory
-                memcpy(disc->udf_usd[vds], position, sizeof(struct unallocSpaceDesc)+(usd->numAllocDescs)*sizeof(extent_ad)); 
+                descLen =   sizeof(struct unallocSpaceDesc)
+                          + le32_to_cpu(usd->numAllocDescs) * sizeof(extent_ad);
+                disc->udf_usd[vds] = malloc(descLen); // Prepare memory
+
+                map_raw(fd, &raw, (uint64_t)(chunk)*CHUNK_SIZE, descLen + offset, devsize);
+                memcpy(disc->udf_usd[vds], raw+offset, descLen);
+                unmap_raw(&raw, (uint64_t)(chunk)*CHUNK_SIZE, descLen + offset);
                 break;
+
             case TAG_IDENT_TD:
                 if(disc->udf_td[vds] != 0) {
                     err("Structure TD is already set. Probably error in tag or media\n");
                     unmap_chunk(dev, chunk, devsize);
                     return -4;
                 }
-                disc->udf_td[vds] = malloc(sizeof(struct terminatingDesc)); // Prepare memory
-                memcpy(disc->udf_td[vds], position, sizeof(struct terminatingDesc)); 
+                descLen = sizeof(struct terminatingDesc);
+                disc->udf_td[vds] = malloc(descLen); // Prepare memory
+                memcpy(disc->udf_td[vds], position, descLen);
                 // Found terminator, ending.
                 unmap_chunk(dev, chunk, devsize);
                 return 0;
+
             case 0:
                 // Found end of VDS, ending.
                 unmap_chunk(dev, chunk, devsize);
                 return 0;
+
             default:
                 // Unknown TAG
                 fatal("Unknown TAG found at %p. Ending.\n", position);
@@ -1100,7 +1123,7 @@ int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64
         dbg("Unmap old chunk...\n");
         unmap_chunk(dev, chunk, devsize);
         dbg("Unmapped\n");
-        location = location + sectorsize;
+        location = location + sectorsize * ((descLen + sectorsize - 1) / sectorsize);
         chunk = location/chunksize;
         offset = location%chunksize;
         dbg("New VDS Location: 0x%" PRIx64 ", chunk: %u, offset: 0x%x\n", location, chunk, offset);
