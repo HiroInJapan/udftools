@@ -2564,69 +2564,6 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 }
             } else if(icbTagADFlags == ICBTAG_FLAG_AD_IN_ICB) {
                 dbg("AD in ICB\n");
-                struct extendedAttrHeaderDesc eahd;
-                struct genericFormat *gf;
-                struct impUseExtAttr *impAttr;
-                struct appUseExtAttr *appAttr;
-                uint8_t *base = NULL;
-                if(ext) {
-                    eahd = *(struct extendedAttrHeaderDesc *)((uint8_t *)(efe) + sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr);
-#ifdef MEMTRACE
-                    dbg("efe: %p, POS: %u, descTag: %p\n", efe,
-                        sizeof(struct extendedFileEntry) + efe->lengthExtendedAttr, &eahd.descTag);
-#endif
-                } else {    
-                    eahd = *(struct extendedAttrHeaderDesc *)((uint8_t *)(fe) + sizeof(struct fileEntry) + fe->lengthExtendedAttr);
-#ifdef MEMTRACE
-                    dbg("fe: %p, POS: %u, descTag: %p\n", fe,
-                        sizeof(struct fileEntry) + fe->lengthExtendedAttr, &eahd.descTag);
-#endif
-                }
-
-                if(eahd.descTag.tagIdent == TAG_IDENT_EAHD) {
-                    base = (ext ? efe->extendedAttrAndAllocDescs : fe->extendedAttrAndAllocDescs) + eahd.appAttrLocation;
-
-                    dbg("impAttrLoc: %u, appAttrLoc: %u\n", eahd.impAttrLocation, eahd.appAttrLocation);
-                    gf = (struct genericFormat *)(base - eahd.appAttrLocation + eahd.impAttrLocation);
-
-                    dbg("AttrType: %u\n", gf->attrType);
-                    dbg("AttrLength: %u\n", gf->attrLength);
-                    if(gf->attrType == EXTATTR_IMP_USE) {
-                        impAttr = (struct impUseExtAttr *)gf;
-                        dbg("ImpUseLength: %u\n", impAttr->impUseLength);
-                        dbg("ImpIdent: Flags: 0x%02x\n", impAttr->impIdent.flags);
-                        dbg("ImpIdent: Ident: %s\n", impAttr->impIdent.ident);
-                        dbg("ImpIdent: IdentSuffix: "); 
-                        for(int k=0; k<8; k++) {
-                            note("0x%02x ", impAttr->impIdent.identSuffix[k]);
-                        }
-                        note("\n");
-                    } else {
-                        err("EAHD mismatch. Expected IMP, found %u\n", gf->attrType);
-                    }
-
-                    gf = (struct genericFormat *)(base - eahd.impAttrLocation + eahd.appAttrLocation);
-
-                    dbg("AttrType: %u\n", gf->attrType);
-                    dbg("AttrLength: %u\n", gf->attrLength);
-                    if(gf->attrType == EXTATTR_APP_USE) {
-                        appAttr = (struct appUseExtAttr *)gf;
-                        (void)appAttr;
-                    } else {
-                        err("EAHD mismatch. Expected APP, found %u\n", gf->attrType);
-
-                        fid_inspected = 1;
-                        for(uint32_t pos=0; ; ) {
-                            if(inspect_fid(fd, dev, disc, devsize, lbnlsn, lsn, base, &pos, stats, depth, seq, &status) != 0) {
-                                dbg("FID inspection over\n");
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    dwarn("ID: 0x%02x\n", eahd.descTag.tagIdent);
-                }
-
             } else {
                 dbg("ICB TAG->flags: 0x%02x\n", fe->icbTag.flags);
             }
