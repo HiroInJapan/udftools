@@ -702,9 +702,16 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_s
                 bea = (const struct beginningExtendedAreaDesc *) vsd; // store it for later
                 foundBEA = 1; 
             } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_BOOT2, 5)) {
-                err("BOOT2 found, unsuported for now.\n");
-                unmap_chunk(dev, chunk, devsize);
-                return -1;
+                if (!foundBEA) {
+                    err("BOOT2 found outside of VRS extended area.\n");
+                    unmap_chunk(dev, chunk, devsize);
+                    return -1;
+                }
+                // Don't fail BOOT2 otherwise; UDF (through at least 2.60) has never
+                // prohibited or specified it.
+                // It might be present *within* BEA01 or NSR blocks in order to
+                // band-aid broken Windows VRS processing when sectors are 4096 bytes.
+                // See https://lkml.org/lkml/2019/7/9/596
             } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_CD001, 5)) {
                 //CD001 means there is ISO9660, we try search for UDF at sector 18
             } else if(!strncmp((const char *)vsd->stdIdent, VSD_STD_ID_CDW02, 5)) {
