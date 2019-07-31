@@ -1367,7 +1367,7 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
  * \return -1 marking failed (actParititonBitmap is uninitialized)
  */ 
 uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size, uint8_t mark) {
-    if(lbn+size < stats->partitionNumOfBits) {
+    if(lbn+size <= stats->partitionNumOfBits) {
         uint32_t byte = 0;
         uint8_t bit = 0;
 
