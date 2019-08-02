@@ -3490,7 +3490,11 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, siz
     // Fix Next Unique ID by maximal found +1
     //((struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse))->uniqueID = stats->maxUUID+1;
     struct logicalVolHeaderDesc *lvhd = (struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse);
-    lvhd->uniqueID = stats->maxUUID+1;
+
+    if (stats->maxUUID)
+        lvhd->uniqueID = stats->maxUUID + 1;
+    else
+        lvhd->uniqueID = 0x10;    // No inodes, use minimum valid UUID
 
     // Set recording date and time to now. 
     time_t t = time(NULL);
