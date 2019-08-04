@@ -1440,7 +1440,6 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  *
  * \param[in] *dev pointer to device array
  * \param[out] *disc FSD is stored in udf_disc structure
- * \param[in] sectorsize device logical sector size
  * \param[in] devsize size of whole device in bytes
  * \param[out] lbnlsn LBN starting offset
  * \param[in] *stats file system status
@@ -1450,7 +1449,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  * \return 4 no correct PD or LVD found
  * \return 8 error during FSD identification
  */
-uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
+uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
                 uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq) {
     long_ad *lap;
     int vds = -1;
@@ -1474,7 +1473,6 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
         err("No correct LVD found. Aborting.\n");
         return ESTATUS_UNCORRECTED_ERRORS;
     }
-    uint32_t lbSize = le32_to_cpu(disc->udf_lvd[vds]->logicalBlockSize); 
 
     lap = (long_ad *)disc->udf_lvd[vds]->logicalVolContentsUse; //FIXME BIG_ENDIAN use lela_to_cpu, but not on ptr to disc. Must store it on different place.
     lb_addr filesetblock = lap->extLocation;
@@ -1488,7 +1486,7 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
     dbg("LAP: length: %x, LBN: %x, PRN: %x\n", filesetlen, filesetblock.logicalBlockNum, filesetblock.partitionReferenceNum);
     dbg("LAP: LSN: %u\n", lsnBase/*+filesetblock.logicalBlockNum*/);
 
-    position = (lsnBase + filesetblock.logicalBlockNum) * (uint64_t) lbSize;
+    position = (lsnBase + filesetblock.logicalBlockNum) * stats->blocksize;
     chunk  = (uint32_t)(position / chunksize);
     offset = (uint32_t)(position % chunksize);
     map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
@@ -1536,8 +1534,6 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
 
     dbg("Stream Length: %u\n", disc->udf_fsd->streamDirectoryICB.extLength & 0x3FFFFFFF);
 
-    (void)sectorsize;
-
 #if HEXPRINT
     print_hex_array(disc->udf_fsd, sizeof(struct fileSetDesc));
 #endif
@@ -1567,12 +1563,11 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, ui
 static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsnBase,
                            uint32_t aedlbn, uint32_t *lengthADArray, uint8_t **ADArray,
                            struct filesystemStats *stats, uint8_t *status) {
-    uint16_t lbSize = stats->blocksize;
     uint32_t lad = 0;
     uint32_t offset = 0, chunk = 0, chunksize = CHUNK_SIZE;
     uint64_t position;
 
-    position = (lsnBase + aedlbn) * (uint64_t) lbSize;
+    position = (lsnBase + aedlbn) * stats->blocksize;
     chunk  = (uint32_t) (position / chunksize);
     offset = (uint32_t) (position % chunksize);
     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -1624,7 +1619,7 @@ static uint8_t inspect_aed(int fd, uint8_t **dev, uint64_t devsize, uint32_t lsn
         dbg("ADArray ptr: %p\n", *ADArray);
 #endif
         dbg("lengthADArray: %u\n", *lengthADArray);
-        increment_used_space(stats, L_AD%lbSize == 0 ? L_AD/lbSize : L_AD/lbSize + 1, aedlbn);
+        increment_used_space(stats, stats->blocksize, aedlbn);
         return 0;
     } else {
         err("Expected AED in LSN %u, but did not find one.\n", lsnBase + aedlbn);
@@ -1787,7 +1782,6 @@ static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc
     short_ad *sad = NULL;
     long_ad *lad = NULL;
     ext_ad *ead = NULL;
-    uint16_t lbSize = stats->blocksize;
     uint32_t lsnBase = lbnlsn;
     uint32_t offset = 0, chunk = 0, chunksize = CHUNK_SIZE;
     uint64_t position = 0;
@@ -1875,7 +1869,7 @@ static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc
 
         if (extType == 0) {
             // Allocated and Recorded
-            position = (lsnBase + extStartLBN) * (uint64_t) lbSize;
+            position = (lsnBase + extStartLBN) * stats->blocksize;
             chunk  = (uint32_t)(position / chunksize);
             offset = (uint32_t)(position % chunksize);
             dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -1935,7 +1929,7 @@ static uint8_t walk_directory(int fd, uint8_t **dev, const struct udf_disc *disc
 
             if (extType == 0) {
                 // Allocated and Recorded
-                position = (lsnBase + extStartLBN) * (uint64_t) lbSize;
+                position = (lsnBase + extStartLBN) * stats->blocksize;
                 chunk  = (uint32_t)(position / chunksize);
                 offset = (uint32_t)(position % chunksize);
                 dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2047,7 +2041,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                 fid->descTag.descCRC = calculate_crc(fid, flen+padding);             
                 fid->descTag.tagChecksum = calculate_checksum(fid->descTag);
 
-                position = lsn * (uint64_t)stats->blocksize;
+                position = lsn * stats->blocksize;
                 chunk  = (uint32_t)(position / chunksize);
                 offset = (uint32_t)(position % chunksize);
                 dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2121,7 +2115,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                         fid->descTag.tagChecksum = calculate_checksum(fid->descTag);
                         dbg("Location: %u\n", fid->descTag.tagLocation);
 
-                        position = lsn * (uint64_t)stats->blocksize;
+                        position = lsn * stats->blocksize;
                         chunk  = (uint32_t)(position / chunksize);
                         offset = (uint32_t)(position % chunksize);
                         dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2153,7 +2147,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                     fid->descTag.tagChecksum = calculate_checksum(fid->descTag);
                     dbg("Location: %u\n", fid->descTag.tagLocation);
 
-                    position = (fid->descTag.tagLocation + lbnlsn) * (uint64_t) stats->blocksize;
+                    position = (fid->descTag.tagLocation + lbnlsn) * stats->blocksize;
                     chunk  = (uint32_t)(position / chunksize);
                     offset = (uint32_t)(position % chunksize);
                     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2284,7 +2278,6 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
         return ESTATUS_UNCORRECTED_ERRORS;
     }
 
-    uint32_t lbSize = le32_to_cpu(disc->udf_lvd[vds]->logicalBlockSize);  
     uint32_t lsnBase = lbnlsn; 
     uint8_t dir = 0;
     uint8_t status = 0;
@@ -2294,7 +2287,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
     uint64_t position = 0;
 
     dwarn("\n(%u) ---------------------------------------------------\n", lsn);
-    position = lbSize * (uint64_t)lsn;
+    position = stats->blocksize * lsn;
     chunk  = (uint32_t)(position / chunksize);
     offset = (uint32_t)(position % chunksize);
     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2308,7 +2301,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
     dbg("global FE increment.\n");
     dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
-    increment_used_space(stats, lbSize, lsn-lbnlsn);
+    increment_used_space(stats, stats->blocksize, lsn-lbnlsn);
     dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
     switch(le16_to_cpu(descTag->tagIdent)) {
         case TAG_IDENT_FE:
@@ -2553,6 +2546,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                             // Allocated
                             increment_used_space(stats, extLength, extPosition);
                         }
+                        uint32_t lbSize = (uint32_t) stats->blocksize;
                         lsn = lsn + (extLength / lbSize);
                         dbg("LSN: %u, ExtLocOrig: %u\n", lsn, extPosition);
                         dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
@@ -2614,7 +2608,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             break;  
         default:
             err("IDENT: %x, LSN: %u, addr: 0x%" PRIx64 "\n", descTag->tagIdent, lsn,
-                lsn * (uint64_t)lbSize);
+                lsn * stats->blocksize);
     }            
     // unmap_chunk(dev, chunk, devsize); 
     return status;
@@ -3213,7 +3207,6 @@ static const unsigned char BitsSetTable256[256] =
  * \param[in,out] *dev memory mapped medium
  * \param[in] *disc UDF disc
  * \param[in] devsize size of whole device in bytes
- * \param[in] sectorsize
  * \param[in,out] *stats file system status
  * \param[in] *seq VDS sequence
  *
@@ -3222,7 +3215,7 @@ static const unsigned char BitsSetTable256[256] =
  * \return 4 -- No correct PD found
  * \return -1 -- no SBD found even if declared
  */
-int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
            struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t chunksize = CHUNK_SIZE;
@@ -3254,7 +3247,7 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_
 
     if(phd->unallocSpaceBitmap.extLength > 3) { //0,1,2,3 are special values ECMA 167r3 4/14.14.1.1
         uint32_t lsnBase = disc->udf_pd[vds]->partitionStartingLocation;
-        uint64_t position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * (uint64_t)sectorsize;
+        uint64_t position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
 
         chunk  = (uint32_t) (position / chunksize);
         offset = (uint32_t) (position % chunksize);
@@ -3295,7 +3288,6 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_
  *
  * \param[in] *dev memory mapped device
  * \param[in] *disc UDF disc
- * \param[in] sectorsize 
  * \param[in] devsize size of whole device in bytes
  * \param[out] *stats filesystem status
  * \param[in] *seq VDS sequence
@@ -3305,7 +3297,7 @@ int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_
  * \return -1 -- SBD not found even if declared
  * \return -128 -- UST, FST or FSB found
  */
-int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
+int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
            struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t offset = 0, chunk = 0;
@@ -3350,7 +3342,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint
     if(phd->unallocSpaceBitmap.extLength > 3) { //0,1,2,3 are special values ECMA 167r3 4/14.14.1.1
         uint32_t lsnBase = disc->udf_pd[vds]->partitionStartingLocation;      
         dbg("LSNBase: %u\n", lsnBase);
-        position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * (uint64_t)sectorsize;
+        position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
         chunk  = (uint32_t)(position / chunksize);
         offset = (uint32_t)(position % chunksize);
         map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__);
@@ -3447,14 +3439,13 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc
  * \param[in] devsize size of whole device in bytes
- * \param[in] sectorsize
  * \param[in] *stats filesystem status
  * \param[in] *seq VDS sequence
  *
  * \return 0 -- All Ok
  * \return 4 -- No correct LVD found
  */
-int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
              struct filesystemStats *stats, vds_sequence_t *seq) {
     int vds = -1;
     uint32_t chunksize = CHUNK_SIZE;
@@ -3472,7 +3463,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, siz
     uint16_t size = sizeof(struct logicalVolIntegrityDesc) + disc->udf_lvid->numOfPartitions*4*2 + disc->udf_lvid->lengthOfImpUse;
     dbg("LVID: loc: %u, len: %u, size: %u\n", loc, len, size);
 
-    position = loc * (uint64_t)sectorsize;
+    position = loc * stats->blocksize;
     chunk  = (uint32_t)(position / chunksize);
     offset = (uint32_t)(position % chunksize);
     map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
@@ -3481,7 +3472,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, siz
     struct impUseLVID *impUse = (struct impUseLVID *)((uint8_t *)(disc->udf_lvid) + sizeof(struct logicalVolIntegrityDesc) + 8*disc->udf_lvid->numOfPartitions); //this is because of ECMA 167r3, 3/24, fig 22
 
     // Fix PD too
-    fix_pd(fd, dev, disc, devsize, sectorsize, stats, seq);
+    fix_pd(fd, dev, disc, devsize, stats, seq);
 
     // Fix file/dir counts
     impUse->numOfFiles = stats->countNumOfFiles;
@@ -3525,7 +3516,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, siz
     uint32_t *freeSpaceTable = (uint32_t *) disc->udf_lvid->data;
     uint32_t *sizeTable      = freeSpaceTable + disc->udf_lvid->numOfPartitions;
 
-    uint32_t newFreeSpace = sizeTable[0] - stats->usedSpace/sectorsize;
+    uint32_t newFreeSpace = sizeTable[0] - stats->usedSpace/stats->blocksize;
     freeSpaceTable[0] = cpu_to_le32(newFreeSpace);
     dbg("New Free Space: %u\n", newFreeSpace);
 

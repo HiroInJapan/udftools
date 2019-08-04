@@ -75,7 +75,7 @@ typedef struct {
 } file_t;
 
 struct filesystemStats {
-    uint16_t blocksize;
+    uint64_t blocksize;  // This is 64 bits to simplify block->byte conversions
     uint64_t actUUID;
     uint64_t maxUUID;
     uint32_t expNumOfFiles;
@@ -177,17 +177,17 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size
 // LVID functions
 int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
              struct filesystemStats *stats, vds_sequence_t *seq );
-int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
              struct filesystemStats *stats, vds_sequence_t *seq);
 
 // PD (SBD) functions
-int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
+int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
            struct filesystemStats *stats, vds_sequence_t *seq);
-int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
+int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
            struct filesystemStats *stats, vds_sequence_t *seq);
 
 // Filetree functions
-uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
+uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
                 uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq);
 uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
                            uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq );

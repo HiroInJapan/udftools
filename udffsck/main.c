@@ -399,14 +399,14 @@ int main(int argc, char *argv[]) {
 
     stats.blocksize = blocksize;
 
-    if(get_pd(fd, dev, &disc, blocksize, devsize, &stats, seq)) {
+    if(get_pd(fd, dev, &disc, devsize, &stats, seq)) {
         err("PD error\n");
         exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
     uint32_t lbnlsn = 0;
     dbg("STATUS: 0x%02x\n", status);
-    status |= get_fsd(fd, dev, &disc, blocksize, devsize, &lbnlsn, &stats, seq);
+    status |= get_fsd(fd, dev, &disc, devsize, &lbnlsn, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
     if(status >= ESTATUS_OPERATIONAL_ERROR) {
         err("Unable to continue without FSD. Consider submitting a bug report. Exiting.\n");
@@ -635,12 +635,12 @@ int main(int argc, char *argv[]) {
 
 
     if(fixlvid == 1) {
-        if(fix_lvid(fd, dev, &disc, devsize, blocksize, &stats, seq) == 0) {
+        if(fix_lvid(fd, dev, &disc, devsize, &stats, seq) == 0) {
             error_status &= ~(ES_LVID | ES_PD); 
             fix_status |= (ES_LVID | ES_PD);
         }
     } else if(fixlvid == 0 && fixpd == 1) {
-        if(fix_pd(fd, dev, &disc, devsize, blocksize, &stats, seq) == 0) {
+        if(fix_pd(fd, dev, &disc, devsize, &stats, seq) == 0) {
             error_status &= ~(ES_PD); 
             fix_status |= ES_PD;
         }
