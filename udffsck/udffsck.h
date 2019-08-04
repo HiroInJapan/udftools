@@ -74,21 +74,22 @@ typedef struct {
     uint32_t size;
 } file_t;
 
+typedef struct {
+    uint64_t  nextUID;
+    uint16_t  minUDFReadRev;
+    uint16_t  minUDFWriteRev;
+    uint16_t  maxUDFWriteRev;
+    uint32_t  numFiles;
+    uint32_t  numDirs;
+    uint32_t  freeSpaceBlocks;
+    uint32_t  partitionNumBlocks;
+    timestamp recordedTime;
+
+} integrity_info_t;
+
 struct filesystemStats {
     uint64_t blocksize;  // This is 64 bits to simplify block->byte conversions
-    uint64_t actUUID;
-    uint64_t maxUUID;
-    uint32_t expNumOfFiles;
-    uint32_t countNumOfFiles;
-    uint32_t expNumOfDirs;
-    uint32_t countNumOfDirs;
-    uint16_t minUDFReadRev;
-    uint16_t minUDFWriteRev;
-    uint16_t maxUDFWriteRev;
     uint16_t AVDPSerialNum;
-    uint64_t usedSpace;
-    uint32_t freeSpaceBlocks;
-    uint32_t partitionSizeBlocks;
     uint32_t expUsedBlocks;
     uint32_t expUnusedBlocks;
     uint32_t partitionAccessType;
@@ -96,7 +97,6 @@ struct filesystemStats {
     uint32_t partitionNumOfBits;
     uint8_t * actPartitionBitmap;
     uint8_t * expPartitionBitmap;
-    timestamp LVIDtimestamp;
     char * partitionIdent;
     char * volumeSetIdent;
     uint8_t dstringFSDLogVolIdentErr;
@@ -111,7 +111,8 @@ struct filesystemStats {
     uint8_t dstringIUVDLVInfo3Err[VDS_STRUCT_AMOUNT];
     uint8_t dstringIUVDLogicalVolIdentErr[VDS_STRUCT_AMOUNT];
 
-
+    integrity_info_t lvid;    // Information from recorded LVID
+    integrity_info_t found;   // Calculated
 };
 
 struct fileInfo {
@@ -154,6 +155,7 @@ struct impUseLVID {
 // Support functions
 char * print_timestamp(timestamp ts);
 uint64_t count_used_bits(struct filesystemStats *stats);
+uint32_t get_used_blocks(const integrity_info_t *info);
 int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, vds_sequence_t *seq );
 void unmap_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize);
 void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * file, int line);
@@ -176,7 +178,7 @@ int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size
 
 // LVID functions
 int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
-             struct filesystemStats *stats, vds_sequence_t *seq );
+             integrity_info_t *info, vds_sequence_t *seq );
 int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
              struct filesystemStats *stats, vds_sequence_t *seq);
 

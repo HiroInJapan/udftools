@@ -1175,13 +1175,13 @@ int get_correct(vds_sequence_t *seq, uint16_t tagIdent) {
  * \param[out] *disc LVID is stored in udf_disc structure
  * \param[in] sectorsize device logical sector size
  * \param[in] devsize size of whole device in bytes
- * \param[out] *stats file system status
+ * \param[out] *info values from recorded LVID
  * \param[in] *seq descriptor sequence
  * \return ESTATUS_OK                 everything ok
  * \return ESTATUS_UNCORRECTED_ERRORS structure is already set or no correct LVID found
  */
 int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
-             struct filesystemStats *stats, vds_sequence_t *seq ) {
+             integrity_info_t *info, vds_sequence_t *seq ) {
     uint32_t chunksize = CHUNK_SIZE;
     uint32_t chunk = 0;
     uint32_t offset = 0;
@@ -1215,26 +1215,25 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
     dbg("LVID: numOfPartitions: %u\n", disc->udf_lvid->numOfPartitions);
 
     struct impUseLVID *impUse = (struct impUseLVID *)((uint8_t *)(disc->udf_lvid) + sizeof(struct logicalVolIntegrityDesc) + 8*disc->udf_lvid->numOfPartitions); //this is because of ECMA 167r3, 3/24, fig 22
-    //stats->actUUID = ((struct logicalVolHeaderDesc *)disc->udf_lvid->logicalVolContentsUse)->uniqueID;
     struct logicalVolHeaderDesc *lvhd = (struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse);
-    stats->actUUID = lvhd->uniqueID;
+    info->nextUID = lvhd->uniqueID;
 
-    stats->LVIDtimestamp = lvid->recordingDateAndTime;
+    info->recordedTime = lvid->recordingDateAndTime;
 
     dbg("LVID: number of files: %u\n", impUse->numOfFiles);
     dbg("LVID: number of dirs:  %u\n", impUse->numOfDirs);
     dbg("LVID: UDF rev: min read:  %04x\n", impUse->minUDFReadRev);
     dbg("               min write: %04x\n", impUse->minUDFWriteRev);
     dbg("               max write: %04x\n", impUse->maxUDFWriteRev);
-    dbg("Next Unique ID: %" PRIu64 "\n", stats->actUUID);
-    dbg("LVID recording timestamp: %s\n", print_timestamp(stats->LVIDtimestamp)); 
+    dbg("Next Unique ID: %" PRIu64 "\n", info->nextUID);
+    dbg("LVID recording timestamp: %s\n", print_timestamp(info->recordedTime));
 
-    stats->expNumOfFiles = impUse->numOfFiles;
-    stats->expNumOfDirs = impUse->numOfDirs;
+    info->numFiles = impUse->numOfFiles;
+    info->numDirs = impUse->numOfDirs;
 
-    stats->minUDFReadRev = impUse->minUDFReadRev;
-    stats->minUDFWriteRev = impUse->minUDFWriteRev;
-    stats->maxUDFWriteRev = impUse->maxUDFWriteRev;
+    info->minUDFReadRev = impUse->minUDFReadRev;
+    info->minUDFWriteRev = impUse->minUDFWriteRev;
+    info->maxUDFWriteRev = impUse->maxUDFWriteRev;
 
     dbg("Logical Volume Contents Use\n");
     for(int i=0; i<32; ) {
@@ -1250,8 +1249,8 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
         note("0x%08x, %u\n", freeSpaceTable[i], freeSpaceTable[i]);
     }
 
-    stats->freeSpaceBlocks     = freeSpaceTable[0];
-    stats->partitionSizeBlocks = sizeTable[0];
+    info->freeSpaceBlocks    = freeSpaceTable[0];
+    info->partitionNumBlocks = sizeTable[0];
 
     dbg("Size Table\n");
     for(uint32_t i=0; i<disc->udf_lvid->numOfPartitions; i++) {
@@ -1402,7 +1401,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
 #if 0   // For debug purposes only
         note("\n ACT \t EXP\n");
         uint32_t shift = 0;
-        for(int i=0+shift, k=0+shift; i<stats->partitionSizeBlocks/8 && i < 100+shift; ) {
+        for(int i=0+shift, k=0+shift; i<stats->partitionNumBlocks/8 && i < 100+shift; ) {
             for(int j=0; j<16; j++, i++) {
                 note("%02x ", stats->actPartitionBitmap[i]);
             }
@@ -1414,7 +1413,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
         }
         note("\n");
         shift = 4400;
-        for(int i=0+shift, k=0+shift; i<stats->partitionSizeBlocks/8 && i < 100+shift; ) {
+        for(int i=0+shift, k=0+shift; i<stats->partitionNumBlocks/8 && i < 100+shift; ) {
             for(int j=0; j<16; j++, i++) {
                 note("%02x ", stats->actPartitionBitmap[i]);
             }
@@ -2085,14 +2084,14 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                 uint32_t uuid = 0;
                 memcpy(&uuid, (fid->icb).impUse+2, sizeof(uint32_t));
                 dbg("UUID: %u\n", uuid);
-                if(stats->maxUUID < uuid) {
-                    stats->maxUUID = uuid;
+                if(stats->found.nextUID <= uuid) {
+                    stats->found.nextUID = uuid + 1;
                     dwarn("New MAX UUID\n");
                 }
                 int fixuuid = 0;
                 if(uuid == 0) {
                     err("(%s) FID Unique ID is 0. Next available is %" PRIu64 ".\n", info.filename,
-                        stats->actUUID);
+                        stats->lvid.nextUID);
                     if(interactive) {
                         if(prompt("Fix it? [Y/n] ")) {
                             fixuuid = 1;
@@ -2106,9 +2105,9 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                         *status |= ESTATUS_UNCORRECTED_ERRORS;
                     }
                     if(fixuuid) {
-                        uuid = stats->actUUID;
-                        stats->maxUUID = uuid;
-                        stats->actUUID++;
+                        uuid = stats->lvid.nextUID;
+                        stats->found.nextUID = uuid;
+                        stats->lvid.nextUID++;
                         seq->lvid.error |= E_UUID;
                         fid->icb.impUse[2] = uuid;
                         fid->descTag.descCRC = calculate_crc(fid, flen+padding);             
@@ -2197,6 +2196,11 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
     return 0;
 }
 
+uint32_t get_used_blocks(const integrity_info_t *info)
+{
+    return (info->partitionNumBlocks - info->freeSpaceBlocks);
+}
+
 /**
  * \brief Pair function capturing used space and its position
  *
@@ -2205,16 +2209,17 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
  * It only stores information about used:free space ration and positions
  *
  * \param[in,out] *stats file system status contains fields used for free space counting and bitmaps for position marking
- * \param[in] increment size of space to mark
+ * \param[in] increment  number of bytes of space to mark
  * \param[in] its position
  */
 void increment_used_space(struct filesystemStats *stats, uint64_t increment, uint32_t position) {
-    stats->usedSpace += (increment % stats->blocksize == 0 ? increment/stats->blocksize : increment/stats->blocksize+1)*stats->blocksize;
-    markUsedBlock(stats, position, increment % stats->blocksize == 0 ? increment/stats->blocksize : increment/stats->blocksize+1, MARK_BLOCK);
+    uint32_t increment_blocks = (increment + stats->blocksize - 1) / stats->blocksize;
+    stats->found.freeSpaceBlocks -= increment_blocks;
+    markUsedBlock(stats, position, increment_blocks, MARK_BLOCK);
 #if DEBUG
     uint64_t bits = count_used_bits(stats);
-    dwarn("INCREMENT to %" PRIu64 " (%" PRIu64 ") / (%" PRIu64 ")\n",
-          stats->usedSpace, stats->usedSpace/stats->blocksize, bits);
+    dwarn("INCREMENT to %u / (%" PRIu64 ")\n",
+          get_used_blocks(&stats->found), bits);
 #endif
 }
 
@@ -2226,16 +2231,18 @@ void increment_used_space(struct filesystemStats *stats, uint64_t increment, uin
  * It only stores information about used:free space ration and positions
  *
  * \param[in,out] *stats file system status contains fields used for free space counting and bitmaps for position marking
- * \param[in] increment size of space to mark
+ * \param[in] decrement number of bytes of space to mark
  * \param[in] its position
  */
-void decrement_used_space(struct filesystemStats *stats, uint64_t increment, uint32_t position) {
-    stats->usedSpace -= (increment % stats->blocksize == 0 ? increment/stats->blocksize : increment/stats->blocksize+1)*stats->blocksize;
-    markUsedBlock(stats, position, increment % stats->blocksize == 0 ? increment/stats->blocksize : increment/stats->blocksize+1, UNMARK_BLOCK);
+void decrement_used_space(struct filesystemStats *stats, uint64_t decrement, uint32_t position) {
+    uint32_t decrement_blocks = (decrement + stats->blocksize - 1) / stats->blocksize;
+    stats->found.freeSpaceBlocks += decrement_blocks;
+    markUsedBlock(stats, position, decrement_blocks, UNMARK_BLOCK);
 #if DEBUG
     uint64_t bits = count_used_bits(stats);
-    dwarn("DECREMENT to %" PRIu64 " (%" PRIu64 ") / (%" PRIu64 ")\n",
-          stats->usedSpace, stats->usedSpace/stats->blocksize, bits);
+    uint32_t foundUsedBlocks = get_used_blocks(&stats->found);
+    dwarn("DECREMENT to %u / (%" PRIu64 ")\n",
+          get_used_blocks(&stats->found), bits);
 #endif
 }
 
@@ -2300,9 +2307,9 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
     }
 
     dbg("global FE increment.\n");
-    dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
+    dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
     increment_used_space(stats, stats->blocksize, lsn-lbnlsn);
-    dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
+    dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
     switch(le16_to_cpu(descTag->tagIdent)) {
         case TAG_IDENT_FE:
         case TAG_IDENT_EFE:
@@ -2397,30 +2404,30 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     break;  
                 case ICBTAG_FILE_TYPE_DIRECTORY:
                     dbg("Filetype: DIR\n");
-                    stats->countNumOfDirs ++;
+                    stats->found.numDirs ++;
                     // stats->usedSpace += lbSize;
                     //increment_used_space(stats, lbSize);
                     dir = 1;
                     break;  
                 case ICBTAG_FILE_TYPE_REGULAR:
                     dbg("Filetype: REGULAR\n");
-                    stats->countNumOfFiles ++;
+                    stats->found.numFiles ++;
                     //                    stats->usedSpace += lbSize;
                     break;  
                 case ICBTAG_FILE_TYPE_BLOCK:
                     dbg("Filetype: BLOCK\n");
-                    stats->countNumOfFiles ++;
+                    stats->found.numFiles ++;
                     break;  
                 case ICBTAG_FILE_TYPE_CHAR:
                     dbg("Filetype: CHAR\n");
-                    stats->countNumOfFiles ++;
+                    stats->found.numFiles ++;
                     break;  
                 case ICBTAG_FILE_TYPE_EA:
                     dbg("Filetype: EA\n");
                     break;  
                 case ICBTAG_FILE_TYPE_FIFO:
                     dbg("Filetype: FIFO\n");
-                    stats->countNumOfFiles ++;
+                    stats->found.numFiles ++;
                     break;  
                 case ICBTAG_FILE_TYPE_SOCKET:
                     dbg("Filetype: SOCKET\n");
@@ -2430,7 +2437,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                     break;  
                 case ICBTAG_FILE_TYPE_SYMLINK:
                     dbg("Filetype: SYMLINK\n");
-                    stats->countNumOfFiles ++;
+                    stats->found.numFiles ++;
                     break;  
                 case ICBTAG_FILE_TYPE_STREAMDIR:
                     dbg("Filetype: STRAMDIR\n");
@@ -2445,7 +2452,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             dbg("Parent ICB loc: %u\n", fe->icbTag.parentICBLocation.logicalBlockNum);
 
             double cts = 0;
-            if((cts = compare_timestamps(stats->LVIDtimestamp, ext ? efe->modificationTime : fe->modificationTime)) < 0) {
+            if((cts = compare_timestamps(stats->lvid.recordedTime, ext ? efe->modificationTime : fe->modificationTime)) < 0) {
                 err("(%s) File timestamp is later than LVID timestamp. LVID needs to be fixed.\n", info.filename);
 #ifdef DEBUG
                 err("CTS: %f\n", cts);
@@ -2486,7 +2493,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                 status |= ESTATUS_CORRECTED_ERRORS;
             }
 
-            dbg("FC: %04u DC: %04u ", stats->countNumOfFiles, stats->countNumOfDirs);
+            dbg("FC: %04u DC: %04u ", stats->found.numFiles, stats->found.numDirs);
             print_file_info(info, depth);
 
             uint8_t fid_inspected = 0;
@@ -2540,7 +2547,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                         }
 
                         dbg("ExtLen: %u, type: %u, ExtLoc: %u\n", extLength, extType, extPosition);
-                        dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
+                        dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
 
                         if (extType < 2) {
                             // Allocated
@@ -2549,7 +2556,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                         uint32_t lbSize = (uint32_t) stats->blocksize;
                         lsn = lsn + (extLength / lbSize);
                         dbg("LSN: %u, ExtLocOrig: %u\n", lsn, extPosition);
-                        dbg("usedSpace: %" PRIu64 "\n", stats->usedSpace);
+                        dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
                         dwarn("Size: %u, Blocks: %u\n", extLength, extLength / lbSize);
                     }
 
@@ -2661,7 +2668,7 @@ uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, u
     dbg("ROOT LSN: %u, len: %u, partition: %u\n", lsn, elen, icbloc.partitionReferenceNum);
     dbg("STREAM LSN: %u len: %u, partition: %u\n", slsn, selen, sicbloc.partitionReferenceNum);
 
-    dbg("Used space offset: %" PRIu64 "\n", stats->usedSpace);
+    dbg("Used space offset: %u\n", get_used_blocks(&stats->found));
     struct fileInfo info;
     memset(&info, 0, sizeof(struct fileInfo));
 
@@ -3310,6 +3317,8 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     }
 
     stats->partitionAccessType = disc->udf_pd[vds]->accessType;
+    stats->found.partitionNumBlocks = disc->udf_pd[vds]->partitionLength;
+    stats->found.freeSpaceBlocks    = disc->udf_pd[vds]->partitionLength;
 
     // Create array for used/unused blocks counting
     stats->partitionNumOfBits  = disc->udf_pd[vds]->partitionLength;
@@ -3475,17 +3484,14 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     fix_pd(fd, dev, disc, devsize, stats, seq);
 
     // Fix file/dir counts
-    impUse->numOfFiles = stats->countNumOfFiles;
-    impUse->numOfDirs = stats->countNumOfDirs;
+    impUse->numOfFiles = stats->found.numFiles;
+    impUse->numOfDirs  = stats->found.numDirs;
 
-    // Fix Next Unique ID by maximal found +1
+    // Fix Next Unique ID
     //((struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse))->uniqueID = stats->maxUUID+1;
     struct logicalVolHeaderDesc *lvhd = (struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse);
 
-    if (stats->maxUUID)
-        lvhd->uniqueID = stats->maxUUID + 1;
-    else
-        lvhd->uniqueID = 0x10;    // No inodes, use minimum valid UUID
+    lvhd->uniqueID = stats->found.nextUID;
 
     // Set recording date and time to now. 
     time_t t = time(NULL);
@@ -3516,9 +3522,9 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     uint32_t *freeSpaceTable = (uint32_t *) disc->udf_lvid->data;
     uint32_t *sizeTable      = freeSpaceTable + disc->udf_lvid->numOfPartitions;
 
-    uint32_t newFreeSpace = sizeTable[0] - stats->usedSpace/stats->blocksize;
-    freeSpaceTable[0] = cpu_to_le32(newFreeSpace);
-    dbg("New Free Space: %u\n", newFreeSpace);
+    sizeTable[0]      = cpu_to_le32(stats->found.partitionNumBlocks);
+    freeSpaceTable[0] = cpu_to_le32(stats->found.freeSpaceBlocks);
+    dbg("New Free Space: %u\n", stats->found.freeSpaceBlocks);
 
     // Close integrity (last thing before write)
     disc->udf_lvid->integrityType = LVID_INTEGRITY_TYPE_CLOSE;

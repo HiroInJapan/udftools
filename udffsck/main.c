@@ -147,13 +147,15 @@ int main(int argc, char *argv[]) {
     uint64_t devsize;
     vds_sequence_t *seq; 
     struct filesystemStats stats;
-    memset(&stats, 0, sizeof(struct filesystemStats));
     uint16_t error_status = 0;
     uint16_t fix_status = 0;
     int force_sectorsize = 0;
     int third_avdp_missing = 0;
     struct sigaction new_action;
     int source = -1;
+
+    memset(&stats, 0, sizeof(struct filesystemStats));
+    stats.found.nextUID = 0x10;     // Min valid unique ID
 
     sigemptyset (&new_action.sa_mask);
     new_action.sa_flags = 0;
@@ -387,9 +389,11 @@ int main(int argc, char *argv[]) {
         exit(status | blocksize_status);
 
 
-    status |= get_lvid(fd, dev, &disc, blocksize, devsize, &stats, seq); //load LVID
-    if(stats.minUDFReadRev > MAX_VERSION){
-        err("Medium UDF revision is %04x and we are able to check up to %04x\n", stats.minUDFReadRev, MAX_VERSION);
+    integrity_info_t *lvid = &stats.lvid;
+    status |= get_lvid(fd, dev, &disc, blocksize, devsize, lvid, seq); //load LVID
+    if(lvid->minUDFReadRev > MAX_VERSION){
+        err("Medium UDF revision is %04x and we are able to check up to %04x\n",
+            lvid->minUDFReadRev, MAX_VERSION);
         exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
@@ -432,44 +436,47 @@ int main(int argc, char *argv[]) {
     uint64_t countedBits = count_used_bits(&stats);
     dbg("**** BITMAP USED SPACE: %" PRIu64 " ****\n", countedBits);
 
+    integrity_info_t *found = &stats.found;
+
     //---------- Corrections --------------
     msg("\nFilesystem status\n-----------------\n");
     get_volume_identifier(&disc, &stats, seq);  
     msg("Volume set identifier: %s\n", stats.volumeSetIdent);
     msg("Partition identifier: %s\n", stats.partitionIdent);
-    msg("Next UniqueID: %" PRIu64 "\n", stats.actUUID);
+    msg("Recorded next UniqueID:   %" PRIu64 "\n", lvid->nextUID);
     if(fast_mode == 0) {
-        msg("Max found UniqueID: %" PRIu64 "\n", stats.maxUUID);
+        msg("Calculated next UniqueID: %" PRIu64 "\n", found->nextUID);
     }
-    msg("Last LVID recorded change: %s\n", print_timestamp(stats.LVIDtimestamp));
-    msg("expected number of files: %u\n", stats.expNumOfFiles);
-    msg("expected number of dirs:  %u\n", stats.expNumOfDirs);
+    msg("Last LVID recorded change: %s\n", print_timestamp(lvid->recordedTime));
+    msg("expected number of files: %u\n", lvid->numFiles);
+    msg("expected number of dirs:  %u\n", lvid->numDirs);
     if(fast_mode == 0) {
-        msg("counted number of files: %u\n", stats.countNumOfFiles);
-        msg("counted number of dirs:  %u\n", stats.countNumOfDirs);
-        if(stats.expNumOfDirs != stats.countNumOfDirs || stats.expNumOfFiles != stats.countNumOfFiles) {
+        msg("counted number of files: %u\n", found->numFiles);
+        msg("counted number of dirs:  %u\n", found->numDirs);
+        if(lvid->numDirs != found->numDirs || lvid->numFiles != found->numFiles) {
             seq->lvid.error |= E_FILES;
         }
     }
-    msg("UDF rev: min read:  %04x\n", stats.minUDFReadRev);
-    msg("         min write: %04x\n", stats.minUDFWriteRev);
-    msg("         max write: %04x\n", stats.maxUDFWriteRev);
+    msg("UDF rev: min read:  %04x\n", lvid->minUDFReadRev);
+    msg("         min write: %04x\n", lvid->minUDFWriteRev);
+    msg("         max write: %04x\n", lvid->maxUDFWriteRev);
     if(fast_mode == 0) {
-        msg("Used Space: %"PRIu64" (%"PRIu64")\n", stats.usedSpace, stats.usedSpace/blocksize);
+        uint32_t foundUsedBlocks = get_used_blocks(&stats.found);
+        msg("Used Space: %"PRIu64" (%u)\n", foundUsedBlocks * stats.blocksize, foundUsedBlocks);
     }
-    msg("Free Space: %"PRIu64" (%u)\n", stats.freeSpaceBlocks * (uint64_t)(blocksize), stats.freeSpaceBlocks);
-    msg("Partition size: %"PRIu64" (%u)\n", stats.partitionSizeBlocks * (uint64_t)(blocksize), stats.partitionSizeBlocks);
+    msg("Free Space: %"PRIu64" (%u)\n", lvid->freeSpaceBlocks * stats.blocksize, lvid->freeSpaceBlocks);
+    msg("Partition size: %"PRIu64" (%u)\n", lvid->partitionNumBlocks * stats.blocksize, lvid->partitionNumBlocks);
     uint64_t expUsedSpace = 0;
     if((fast_mode == 0) && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
-        expUsedSpace = (stats.partitionSizeBlocks - stats.freeSpaceBlocks) * (uint64_t) blocksize;
+        expUsedSpace = get_used_blocks(lvid) * stats.blocksize;
         msg("Expected Used Space: %"PRIu64" (%"PRIu64")\n", expUsedSpace, expUsedSpace / blocksize);
         msg("Expected Used Blocks: %u\nExpected Unused Blocks: %u\n", stats.expUsedBlocks, stats.expUnusedBlocks);
     }
     if((fast_mode == 0)  && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
-        int64_t usedSpaceDiff = expUsedSpace-stats.usedSpace;
+        int64_t usedSpaceDiff = expUsedSpace - get_used_blocks(&stats.found) * stats.blocksize;
         if(usedSpaceDiff != 0) {
             err("%" PRId64 " blocks are unused but not marked as unallocated in Free Space Table.\n", usedSpaceDiff/blocksize);
-            err("Correct free space: %" PRId64 "\n", stats.freeSpaceBlocks + usedSpaceDiff/blocksize);
+            err("Correct free space: %" PRId64 "\n", lvid->freeSpaceBlocks + usedSpaceDiff/blocksize);
             seq->lvid.error |= E_FREESPACE;
         }
         int64_t usedSpaceDiffBlocks = stats.expUsedBlocks - countedBits;//stats.usedSpace/blocksize;
@@ -589,7 +596,7 @@ int main(int argc, char *argv[]) {
         err("LVID is broken. Recovery is not possible.\n");
         error_status |= ES_LVID;
     } else {
-        if(stats.maxUUID >= stats.actUUID || (seq->lvid.error & E_UUID)) {
+        if(found->nextUID > lvid->nextUID || (seq->lvid.error & E_UUID)) {
             err("Max found Unique ID is same or bigger that Unique ID found at LVID.\n");
             lviderr = 1;
         }
@@ -651,7 +658,7 @@ int main(int argc, char *argv[]) {
     uint32_t shift = 0;
     uint32_t line = 0;
     uint32_t amount = 50000;
-    for(int i=0+shift, k=0+shift; i<stats.partitionSizeBlocks/8 && i < amount+shift; ) {
+    for(int i=0+shift, k=0+shift; i<stats.partitionNumBlocks/8 && i < amount+shift; ) {
         note("[%04u] ",line++);
         for(int j=0; j<16; j++, i++) {
             note("%02x ", stats.actPartitionBitmap[i]);
