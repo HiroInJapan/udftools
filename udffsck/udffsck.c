@@ -773,35 +773,6 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_s
 }
 
 /**
- * \brief Counts used bits (blocks) at stats->actParitionBitmap.
- *
- * Support function for getting free space from actual bitmap.
- *
- * \param[in] *stats file system stats structure with filled bitmap
- * \return used blocks amount
- */
-uint64_t count_used_bits(struct filesystemStats *stats) {
-    if(stats->actPartitionBitmap == NULL)
-        return -1;
-
-    uint64_t countedBits = 0;
-    uint8_t rest = stats->partitionNumOfBits % 8;
-    for(int i = 0; i<(int)(stats->partitionNumOfBytes); i++) {
-        uint8_t piece = ~stats->actPartitionBitmap[i];
-        if(i<(int)(stats->partitionNumOfBytes-1)) {
-            for(int j = 0; j<8; j++) {
-                countedBits += (piece>>j)&1;
-            }
-        } else {
-            for(int j = 0; j<rest; j++) {
-                countedBits += (piece>>j)&1;
-            }
-        }
-    }
-    return countedBits;
-}
-
-/**
  * \brief Locate AVDP on device and store it
  *
  * This function checks for AVDP at a specified well-known position.
@@ -1366,7 +1337,7 @@ int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, 
  * \return -1 marking failed (actParititonBitmap is uninitialized)
  */ 
 uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size, uint8_t mark) {
-    if(lbn+size <= stats->partitionNumOfBits) {
+    if ((lbn + size) <= stats->found.partitionNumBlocks) {
         uint32_t byte = 0;
         uint8_t bit = 0;
 
@@ -2217,9 +2188,7 @@ void increment_used_space(struct filesystemStats *stats, uint64_t increment, uin
     stats->found.freeSpaceBlocks -= increment_blocks;
     markUsedBlock(stats, position, increment_blocks, MARK_BLOCK);
 #if DEBUG
-    uint64_t bits = count_used_bits(stats);
-    dwarn("INCREMENT to %u / (%" PRIu64 ")\n",
-          get_used_blocks(&stats->found), bits);
+    dwarn("INCREMENT to %u\n", get_used_blocks(&stats->found));
 #endif
 }
 
@@ -2239,10 +2208,7 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t decrement, uin
     stats->found.freeSpaceBlocks += decrement_blocks;
     markUsedBlock(stats, position, decrement_blocks, UNMARK_BLOCK);
 #if DEBUG
-    uint64_t bits = count_used_bits(stats);
-    uint32_t foundUsedBlocks = get_used_blocks(&stats->found);
-    dwarn("DECREMENT to %u / (%" PRIu64 ")\n",
-          get_used_blocks(&stats->found), bits);
+    dwarn("DECREMENT to %u\n", get_used_blocks(&stats->found));
 #endif
 }
 
@@ -3321,10 +3287,9 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     stats->found.freeSpaceBlocks    = disc->udf_pd[vds]->partitionLength;
 
     // Create array for used/unused blocks counting
-    stats->partitionNumOfBits  = disc->udf_pd[vds]->partitionLength;
-    stats->partitionNumOfBytes = (stats->partitionNumOfBits + 7) / 8;
-    stats->actPartitionBitmap  = malloc(stats->partitionNumOfBytes);
-    memset(stats->actPartitionBitmap, 0xff, stats->partitionNumOfBytes);
+    uint32_t bitmapNumBytes = (stats->found.partitionNumBlocks + 7) / 8;
+    stats->actPartitionBitmap  = malloc(bitmapNumBytes);
+    memset(stats->actPartitionBitmap, 0xff, bitmapNumBytes);
     dbg("Create array done\n");
 
     struct partitionHeaderDesc *phd = (struct partitionHeaderDesc *)(disc->udf_pd[vds]->partitionContentsUse);
@@ -3369,6 +3334,10 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
             err("SBD CRC error. Continue with caution.\n");
             seq->pd.error |= E_CRC; 
         }
+        if (sbd->numOfBits != stats->found.partitionNumBlocks) {
+            err("SBD size error. Continue with caution.\n");
+        	seq->pd.error |= E_FREESPACE;
+        }
         dbg("SBD is ok\n");
         dbg("[SBD] NumOfBits: %u\n", sbd->numOfBits);
         dbg("[SBD] NumOfBytes: %u\n", sbd->numOfBytes);
@@ -3378,8 +3347,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
         dbg("Bitmap: %u\n", (lsnBase + phd->unallocSpaceBitmap.extPosition));
 #endif
 
-        stats->partitionNumOfBytes = sbd->numOfBytes;
-        stats->partitionNumOfBits = sbd->numOfBits;
+        stats->spacedesc.partitionNumBlocks = sbd->numOfBits;
 
         uint8_t *ptr = NULL;
         dbg("Chunk: %u\n", chunk);
@@ -3391,7 +3359,6 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
        
         dbg("Get bitmap statistics\n"); 
         //Get actual bitmap statistics
-        uint32_t usedBlocks = 0;
         uint32_t unusedBlocks = 0;
         uint8_t count = 0;
         uint8_t v = 0;
@@ -3399,11 +3366,9 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
             v = sbd->bitmap[i];
             //if(i%1000 == 0) dbg("0x%02x %d\n",v, i);
             count = BitsSetTable256[v & 0xff] + BitsSetTable256[(v >> 8) & 0xff] + BitsSetTable256[(v >> 16) & 0xff] + BitsSetTable256[v >> 24];     
-            usedBlocks += 8-count;
             unusedBlocks += count;
         }
         dbg("Unused blocks: %u\n", unusedBlocks);
-        dbg("Used Blocks: %u\n", usedBlocks);
 
         uint8_t bitCorrection = sbd->numOfBytes*8-sbd->numOfBits;
         dbg("BitCorrection: %u\n", bitCorrection);
@@ -3413,16 +3378,12 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
             dbg("Mask: 0x%02x, Result: 0x%02x\n", (1 << i), v & (1 << i));
             if(v & (1 << i))
                 unusedBlocks++;
-            else
-                usedBlocks++;
         }
 
-
-        stats->expUsedBlocks = usedBlocks;
-        stats->expUnusedBlocks = unusedBlocks;
+        stats->spacedesc.freeSpaceBlocks = unusedBlocks;
         stats->expPartitionBitmap = sbd->bitmap;
         dbg("Unused blocks: %u\n", unusedBlocks);
-        dbg("Used Blocks: %u\n", usedBlocks);
+        dbg("Used Blocks: %u\n", get_used_blocks(&stats->spacedesc));
 
         sbd = (struct spaceBitmapDesc *)(dev[chunk]+offset);
         unmap_raw(&ptr, (uint64_t)(chunk)*CHUNK_SIZE, sbd->numOfBytes);

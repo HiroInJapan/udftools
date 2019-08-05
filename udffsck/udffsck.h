@@ -90,11 +90,7 @@ typedef struct {
 struct filesystemStats {
     uint64_t blocksize;  // This is 64 bits to simplify block->byte conversions
     uint16_t AVDPSerialNum;
-    uint32_t expUsedBlocks;
-    uint32_t expUnusedBlocks;
     uint32_t partitionAccessType;
-    uint32_t partitionNumOfBytes;
-    uint32_t partitionNumOfBits;
     uint8_t * actPartitionBitmap;
     uint8_t * expPartitionBitmap;
     char * partitionIdent;
@@ -111,8 +107,9 @@ struct filesystemStats {
     uint8_t dstringIUVDLVInfo3Err[VDS_STRUCT_AMOUNT];
     uint8_t dstringIUVDLogicalVolIdentErr[VDS_STRUCT_AMOUNT];
 
-    integrity_info_t lvid;    // Information from recorded LVID
-    integrity_info_t found;   // Calculated
+    integrity_info_t lvid;      // Information from recorded LVID
+    integrity_info_t spacedesc; // Information from recorded space descriptor (if any)
+    integrity_info_t found;     // Calculated
 };
 
 struct fileInfo {
@@ -154,7 +151,6 @@ struct impUseLVID {
 
 // Support functions
 char * print_timestamp(timestamp ts);
-uint64_t count_used_bits(struct filesystemStats *stats);
 uint32_t get_used_blocks(const integrity_info_t *info);
 int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, vds_sequence_t *seq );
 void unmap_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize);

@@ -433,9 +433,6 @@ int main(int argc, char *argv[]) {
         note("\n");
     }
 
-    uint64_t countedBits = count_used_bits(&stats);
-    dbg("**** BITMAP USED SPACE: %" PRIu64 " ****\n", countedBits);
-
     integrity_info_t *found = &stats.found;
 
     //---------- Corrections --------------
@@ -470,7 +467,8 @@ int main(int argc, char *argv[]) {
     if((fast_mode == 0) && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
         expUsedSpace = get_used_blocks(lvid) * stats.blocksize;
         msg("Expected Used Space: %"PRIu64" (%"PRIu64")\n", expUsedSpace, expUsedSpace / blocksize);
-        msg("Expected Used Blocks: %u\nExpected Unused Blocks: %u\n", stats.expUsedBlocks, stats.expUnusedBlocks);
+        msg("Space descriptor used blocks: %u\n", get_used_blocks(&stats.spacedesc));
+        msg(".................free blocks: %u\n", stats.spacedesc.freeSpaceBlocks);
     }
     if((fast_mode == 0)  && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
         int64_t usedSpaceDiff = expUsedSpace - get_used_blocks(&stats.found) * stats.blocksize;
@@ -479,10 +477,13 @@ int main(int argc, char *argv[]) {
             err("Correct free space: %" PRId64 "\n", lvid->freeSpaceBlocks + usedSpaceDiff/blocksize);
             seq->lvid.error |= E_FREESPACE;
         }
-        int64_t usedSpaceDiffBlocks = stats.expUsedBlocks - countedBits;//stats.usedSpace/blocksize;
-        if(usedSpaceDiffBlocks != 0) {
-            err("%" PRId64 " blocks are unused but not marked as unallocated in SBD.\n", usedSpaceDiffBlocks);
-            seq->pd.error |= E_FREESPACE; 
+        int64_t spaceDescDiffBlocks = get_used_blocks(&stats.spacedesc) - get_used_blocks(&stats.found);
+        if (spaceDescDiffBlocks > 0) {
+            err("%" PRId64 " blocks are unused but marked as allocated in SBD.\n", spaceDescDiffBlocks);
+            seq->pd.error |= E_FREESPACE;
+        } else if (spaceDescDiffBlocks < 0) {
+            err("%" PRId64 " blocks are used but marked as unallocated in SBD.\n", -spaceDescDiffBlocks);
+            seq->pd.error |= E_FREESPACE;
         }
     }
 
