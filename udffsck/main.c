@@ -195,6 +195,7 @@ int main(int argc, char *argv[]) {
 
     memset(&stats, 0, sizeof(struct filesystemStats));
     stats.found.nextUID = 0x10;     // Min valid unique ID
+    stats.found.maxUDFWriteRev = MAX_VERSION;
 
     sigemptyset (&new_action.sa_mask);
     new_action.sa_flags = 0;
@@ -492,7 +493,7 @@ int main(int argc, char *argv[]) {
     integrity_msg("# directories:",      "%" PRIu64,   lvid->numDirs,            found->numDirs,            !lvid_invalid);
     integrity_msg("UDF rev: min read:",  "%04" PRIx64, lvid->minUDFReadRev,      found->minUDFReadRev,      !lvid_invalid);
     integrity_msg(".........min write:", "%04" PRIx64, lvid->minUDFWriteRev,     found->minUDFWriteRev,     !lvid_invalid);
-    integrity_msg(".........max write:", "%04" PRIx64, lvid->maxUDFWriteRev,     MAX_VERSION,               !lvid_invalid);
+    integrity_msg(".........max write:", "%04" PRIx64, lvid->maxUDFWriteRev,     found->maxUDFWriteRev,     !lvid_invalid);
     integrity_msg("Partition blocks:",   "%" PRIu64,   lvid->partitionNumBlocks, found->partitionNumBlocks, !lvid_invalid);
     integrity_msg("............free:",   "%" PRIu64,   lvid->freeSpaceBlocks,    found->freeSpaceBlocks,    !lvid_invalid);
     integrity_msg("............used:",   "%" PRIu64,   lvidUsedBlocks,           foundUsedBlocks,           !lvid_invalid);
@@ -634,44 +635,38 @@ int main(int argc, char *argv[]) {
 
     int fixlvid = 0;
     int fixpd = 0;
-    int lviderr = 0;
-    if (lvid_invalid) {
-        //LVID is doomed.
-        err("LVID is broken. Recovery is not possible.\n");
-        error_status |= ES_LVID;
-    } else {
-        if(found->nextUID > lvid->nextUID || (seq->lvid.error & E_UUID)) {
-            err("Max found Unique ID is same or bigger that Unique ID found at LVID.\n");
-            lviderr = 1;
-        }
-        if(disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) {
-            //There are some unfinished writes
-            err("Opened integrity type. Some writes may be unfinished.\n");
-            lviderr = 1;
-        }
-        if(seq->lvid.error & E_TIMESTAMP) {
-            err("LVID timestamp is older than timestamps of files.\n");
-            lviderr=1;
-        }
-        if(seq->lvid.error & E_FILES) {
-            err("Number of files or directories is not corresponding to counted number\n");
-            lviderr=1;
-        }
-        if(seq->lvid.error & E_FREESPACE) {
-            err("Free Space table is not corresponding to reality.\n");
-            lviderr=1;
-        }
+    int lviderr = lvid_invalid;
+    if(found->nextUID > lvid->nextUID || (seq->lvid.error & E_UUID)) {
+        err("Max found Unique ID is same or bigger that Unique ID found at LVID.\n");
+        lviderr = 1;
+    }
+    if(disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) {
+        //There are some unfinished writes
+        err("Opened integrity type. Some writes may be unfinished.\n");
+        lviderr = 1;
+    }
+    if(seq->lvid.error & E_TIMESTAMP) {
+        err("LVID timestamp is older than timestamps of files.\n");
+        lviderr=1;
+    }
+    if(seq->lvid.error & E_FILES) {
+        err("Number of files or directories is not corresponding to counted number\n");
+        lviderr=1;
+    }
+    if(seq->lvid.error & E_FREESPACE) {
+        err("Free Space table is not corresponding to reality.\n");
+        lviderr=1;
+    }
 
-        if(lviderr) {
-            error_status |= ES_LVID;
-            if(interactive) {
-                if(prompt("Fix it? [Y/n]") != 0) {
-                    fixlvid = 1;
-                }
-            }
-            if(autofix)
+    if(lviderr) {
+        error_status |= ES_LVID;
+        if(interactive) {
+            if(prompt("Fix it? [Y/n]") != 0) {
                 fixlvid = 1;
+            }
         }
+        if(autofix)
+            fixlvid = 1;
     }
 
     if(seq->pd.error != 0) {

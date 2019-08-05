@@ -2479,7 +2479,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
             uint64_t feUUID = (ext ? efe->uniqueID : fe->uniqueID);
             dbg("Unique ID: FE: %"PRIu64" FID: %"PRIu32"\n", (feUUID), uuid); //PRIu32 is fixing uint32_t printing
             if (uuid == 0) {
-            	// Account UIDs that can't be handled during FID processing
+                // Account UIDs that can't be handled during FID processing
                 if(stats->found.nextUID <= feUUID) {
                     stats->found.nextUID = feUUID + 1;
                     dwarn("New MAX UUID\n");
@@ -3391,7 +3391,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
         }
         if (sbd->numOfBits != stats->found.partitionNumBlocks) {
             err("SBD size error. Continue with caution.\n");
-        	seq->pd.error |= E_FREESPACE;
+            seq->pd.error |= E_FREESPACE;
         }
         dbg("SBD is ok\n");
         dbg("[SBD] NumOfBits: %u\n", sbd->numOfBits);
@@ -3457,9 +3457,7 @@ int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
 /**
  * \brief Fix LVID values
  *
- * This function fixes only values within LVID. It is not able to fix a structurally broken LVID (wrong CRC/checksum).
- *
- * Fixes opened integrity type, timestamps, amount of files/directories, free space tables.
+ * This function rebuilds the LVID from scratch if the recorded one is damaged and not just out-of-date.
  *
  * \param[in,out] *dev memory mapped device
  * \param[in,out] *disc UDF disc
@@ -3485,8 +3483,6 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
 
     uint32_t loc = disc->udf_lvd[vds]->integritySeqExt.extLocation;
     uint32_t len = disc->udf_lvd[vds]->integritySeqExt.extLength;
-    uint16_t size = sizeof(struct logicalVolIntegrityDesc) + disc->udf_lvid->numOfPartitions*4*2 + disc->udf_lvid->lengthOfImpUse;
-    dbg("LVID: loc: %u, len: %u, size: %u\n", loc, len, size);
 
     position = loc * stats->blocksize;
     chunk  = (uint32_t)(position / chunksize);
@@ -3494,20 +3490,60 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     map_chunk(fd, dev, chunk, devsize, __FILE__, __LINE__); 
 
     struct logicalVolIntegrityDesc *lvid = (struct logicalVolIntegrityDesc *)(dev[chunk]+offset);
-    struct impUseLVID *impUse = (struct impUseLVID *)((uint8_t *)(disc->udf_lvid) + sizeof(struct logicalVolIntegrityDesc) + 8*disc->udf_lvid->numOfPartitions); //this is because of ECMA 167r3, 3/24, fig 22
 
     // Fix PD too
     fix_pd(fd, dev, disc, devsize, stats, seq);
 
+    // These two may not be correct if LVID is damaged
+    uint16_t size =   sizeof(struct logicalVolIntegrityDesc)
+                    + disc->udf_lvid->numOfPartitions * sizeof(uint32_t) * 2
+                    + disc->udf_lvid->lengthOfImpUse;
+    struct impUseLVID *impUse = (struct impUseLVID *)(  (uint8_t *)(disc->udf_lvid)
+                                                      + size
+                                                      - disc->udf_lvid->lengthOfImpUse);
+
+    if (seq->lvid.error & (E_CRC | E_CHECKSUM | E_WRONGDESC))
+    {
+        // A full rebuild of the LVID is needed
+        size =   sizeof(struct logicalVolIntegrityDesc)
+               + sizeof(uint32_t) * 2  // Partition size and free block count (1 partition)
+               + sizeof(struct logicalVolIntegrityDescImpUse);
+
+        impUse = (struct impUseLVID *)(  (uint8_t *)(disc->udf_lvid)
+                                       + size
+                                       - sizeof(struct logicalVolIntegrityDescImpUse));
+
+        memset(disc->udf_lvid, 0, size);    // @todo blank the entire integrity extent?
+
+        disc->udf_lvid->descTag.tagIdent      = constant_cpu_to_le16(TAG_IDENT_LVID);
+        disc->udf_lvid->descTag.descVersion   = (stats->found.minUDFReadRev < 0x0200)
+                                                  ? constant_cpu_to_le16(2)
+                                                  : constant_cpu_to_le16(3);
+        disc->udf_lvid->descTag.descCRCLength = cpu_to_le16(size - sizeof(tag));
+        disc->udf_lvid->descTag.tagSerialNum  = constant_cpu_to_le16(1);
+        disc->udf_lvid->descTag.tagLocation   = cpu_to_le32(loc);
+        disc->udf_lvid->numOfPartitions       = constant_cpu_to_le32(1);
+        disc->udf_lvid->lengthOfImpUse        = constant_cpu_to_le32(sizeof(struct logicalVolIntegrityDescImpUse));
+
+        impUse->minUDFReadRev  = cpu_to_le16(stats->found.minUDFReadRev);
+        impUse->minUDFWriteRev = cpu_to_le16(stats->found.minUDFWriteRev);
+        impUse->maxUDFWriteRev = cpu_to_le16(stats->found.maxUDFWriteRev);
+
+        strcpy(impUse->impID.ident, UDF_ID_DEVELOPER);
+        impUse->impID.identSuffix[0] = UDF_OS_CLASS_UNIX;
+        impUse->impID.identSuffix[1] = UDF_OS_ID_LINUX;
+    }
+    dbg("LVID: loc: %u, len: %u, size: %u\n", loc, len, size);
+
     // Fix file/dir counts
-    impUse->numOfFiles = stats->found.numFiles;
-    impUse->numOfDirs  = stats->found.numDirs;
+    impUse->numOfFiles = cpu_to_le32(stats->found.numFiles);
+    impUse->numOfDirs  = cpu_to_le32(stats->found.numDirs);
 
     // Fix Next Unique ID
     //((struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse))->uniqueID = stats->maxUUID+1;
     struct logicalVolHeaderDesc *lvhd = (struct logicalVolHeaderDesc *)(disc->udf_lvid->logicalVolContentsUse);
 
-    lvhd->uniqueID = stats->found.nextUID;
+    lvhd->uniqueID = cpu_to_le64(stats->found.nextUID);
 
     // Set recording date and time to now. 
     time_t t = time(NULL);
@@ -3522,9 +3558,11 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     int16_t t_offset = hrso*60+mino;
     dbg("Offset: %d, hrs: %d, min: %d\n", t_offset, hrso, mino);
     dbg("lhr: %d, hr: %d\n", tmlocal.tm_hour, tm.tm_hour);
+
     timestamp *ts = &(disc->udf_lvid->recordingDateAndTime);
-    ts->typeAndTimezone = (1 << 12) | (t_offset >= 0 ? t_offset : (0x1000-t_offset));
-    ts->year = tmlocal.tm_year + 1900;
+    ts->typeAndTimezone =   constant_cpu_to_le16(1 << 12)
+                          | cpu_to_le16(t_offset >= 0 ? t_offset : (0x1000-t_offset));
+    ts->year  = cpu_to_le16(tmlocal.tm_year + 1900);
     ts->month = tmlocal.tm_mon + 1;
     ts->day = tmlocal.tm_mday;
     ts->hour = tmlocal.tm_hour;
@@ -3533,7 +3571,7 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     ts->centiseconds = 0;
     ts->hundredsOfMicroseconds = 0;
     ts->microseconds = 0;
-    dbg("Type and Timezone: 0x%04x\n", ts->typeAndTimezone);
+    dbg("Type and Timezone: 0x%04x\n", le16_to_cpu(ts->typeAndTimezone));
 
     uint32_t *freeSpaceTable = (uint32_t *) disc->udf_lvid->data;
     uint32_t *sizeTable      = freeSpaceTable + disc->udf_lvid->numOfPartitions;
@@ -3543,9 +3581,9 @@ int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
     dbg("New Free Space: %u\n", stats->found.freeSpaceBlocks);
 
     // Close integrity (last thing before write)
-    disc->udf_lvid->integrityType = LVID_INTEGRITY_TYPE_CLOSE;
+    disc->udf_lvid->integrityType = constant_cpu_to_le32(LVID_INTEGRITY_TYPE_CLOSE);
 
-    //Recalculate CRC and checksum
+    // Recalculate CRC and checksum
     disc->udf_lvid->descTag.descCRC = calculate_crc(disc->udf_lvid, size);
     disc->udf_lvid->descTag.tagChecksum = calculate_checksum(disc->udf_lvid->descTag);
     //Write changes back to medium
