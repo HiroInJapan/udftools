@@ -34,7 +34,7 @@
 #include "libudffs.h"
 #include "options.h"
 
-// Local function protypes
+// Local function prototypes
 uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
                  uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
                  uint32_t uuid, struct fileInfo info, vds_sequence_t *seq );
@@ -47,6 +47,7 @@ int copy_descriptor(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsi
                     uint32_t sourcePosition, uint32_t destinationPosition, size_t size);
 int append_error(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds, uint8_t error);
 uint8_t get_error(vds_sequence_t *seq, uint16_t tagIdent, vds_type_e vds);
+static void update_min_udf_revision(struct filesystemStats *stats, uint16_t new_revision);
 
 // Local defines
 #define MARK_BLOCK 1    ///< Mark switch for markUsedBlock() function
@@ -665,7 +666,8 @@ uint8_t check_dstring(dstring *in, size_t field_size) {
  * \return -1 -- found BOOT2 or CDW02. Unsupported for now
  * \return 1 -- UDF not detected 
  */
-int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize) {
+int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize,
+           struct filesystemStats *stats) {
     const struct volStructDesc *vsd = NULL;
     const struct beginningExtendedAreaDesc *bea = NULL;
     const struct volStructDesc *nsr = NULL;
@@ -749,9 +751,10 @@ int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_s
         else
             err("bea: not found\n");
 
-        if (nsr)
+        if (nsr) {
             dbg("nsr: type:%u, id:%.5s, v:%u\n", nsr->structType, nsr->stdIdent, nsr->structVersion);
-        else
+            update_min_udf_revision(stats, nsr->stdIdent[4] == '3' ? 0x0200 : 0x0100);
+        } else
             err("nsr: not found\n");
 
         if (tea)
@@ -1444,6 +1447,14 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
         return ESTATUS_UNCORRECTED_ERRORS;
     }
 
+    // Catch up on tracking minimum UDF revision required to read/write this media
+    uint16_t leRecordedUDFRevision = *(const uint16_t*) disc->udf_lvd[vds]->domainIdent.identSuffix;
+    update_min_udf_revision(stats, le16_to_cpu(leRecordedUDFRevision));
+    // @todo if LVD has a Type 2 partition map, use its UDF revision to update, also
+
+    leRecordedUDFRevision = *(const uint16_t*) disc->udf_iuvd[vds]->impIdent.identSuffix;
+    update_min_udf_revision(stats, le16_to_cpu(leRecordedUDFRevision));
+
     lap = (long_ad *)disc->udf_lvd[vds]->logicalVolContentsUse; //FIXME BIG_ENDIAN use lela_to_cpu, but not on ptr to disc. Must store it on different place.
     lb_addr filesetblock = lap->extLocation;
 
@@ -1470,6 +1481,9 @@ uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
         unmap_chunk(dev, chunk, devsize);
         return ESTATUS_OPERATIONAL_ERROR;
     }
+
+    leRecordedUDFRevision = *(const uint16_t*) disc->udf_fsd->domainIdent.identSuffix;
+    update_min_udf_revision(stats, le16_to_cpu(leRecordedUDFRevision));
 
     size_t ident_max_size = sizeof(disc->udf_fsd->logicalVolIdent);
     stats->partitionIdent = calloc(2, ident_max_size);
@@ -2172,6 +2186,15 @@ uint32_t get_used_blocks(const integrity_info_t *info)
     return (info->partitionNumBlocks - info->freeSpaceBlocks);
 }
 
+static void update_min_udf_revision(struct filesystemStats *stats, uint16_t new_revision)
+{
+    if (new_revision > stats->found.minUDFReadRev)
+        stats->found.minUDFReadRev = new_revision;
+
+    if (new_revision > stats->found.minUDFWriteRev)
+        stats->found.minUDFWriteRev = new_revision;
+}
+
 /**
  * \brief Pair function capturing used space and its position
  *
@@ -2299,6 +2322,7 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
                         return ESTATUS_UNCORRECTED_ERRORS;
                     }
                 }
+                update_min_udf_revision(stats, 0x0200);
                 ext = 1;
             } else {
                 if(crc(fe, sizeof(struct fileEntry) + le32_to_cpu(fe->lengthExtendedAttr) + le32_to_cpu(fe->lengthAllocDescs))) {

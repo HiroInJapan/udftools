@@ -307,7 +307,7 @@ int main(int argc, char *argv[]) {
     seq = calloc(1, sizeof(vds_sequence_t));
 
     stats.AVDPSerialNum = 0xFFFF;
-    status = is_udf(fd, dev, &blocksize, devsize, force_sectorsize); //this function is checking for UDF recognition sequence. It also tries to detect blocksize
+    status = is_udf(fd, dev, &blocksize, devsize, force_sectorsize, &stats); //this function is checking for UDF recognition sequence. It also tries to detect blocksize
     if(status < 0) {
         exit(status);
     } else if(status == 1) { //Unclosed or bridged medium 

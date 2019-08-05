@@ -157,7 +157,8 @@ void unmap_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize);
 void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * file, int line);
 
 // UDF detection
-int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize);
+int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize,
+           struct filesystemStats *stats);
 int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint64_t devsize,
              avdp_type_e type, int force_sectorsize, struct filesystemStats *stats);
 int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
