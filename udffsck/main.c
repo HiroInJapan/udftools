@@ -117,6 +117,45 @@ int any_error(vds_sequence_t *seq) {
 #define ES_PD    0x0004
 #define ES_LVID  0x0008
 
+static void integrity_msg(const char* label, const char* valueFormat,
+                          uint64_t lvidValue, uint64_t calcValue,
+                          int bPrintLVID)
+{
+    static char lvidText[32];
+    static char calcText[32];
+
+    static char msgBuf[128];
+
+    if (bPrintLVID)
+    {
+        if (strcmp(valueFormat, "%s") == 0)
+            snprintf(lvidText, sizeof(lvidText), valueFormat, (const char*) lvidValue);
+        else
+            snprintf(lvidText, sizeof(lvidText), valueFormat, lvidValue);
+    }
+    else
+        lvidText[0] = '\0';
+
+    if (!bPrintLVID || !fast_mode) {
+        if (strcmp(valueFormat, "%s") == 0)
+            snprintf(calcText, sizeof(calcText), valueFormat, (const char*) calcValue);
+        else
+            snprintf(calcText, sizeof(calcText), valueFormat, calcValue);
+    } else
+        calcText[0] = '\0';
+
+    if (bPrintLVID)
+    {
+        const char* diffFlag = "";
+        if (bPrintLVID && !fast_mode && (strcmp(valueFormat, "%s") != 0) && (calcValue != lvidValue))
+            diffFlag = "<--";
+
+        msg("%-20s%10s  %10s %s\n", label, lvidText, calcText, diffFlag);
+    }
+    else
+        msg("%-20s%10s\n", label, calcText);
+}
+
 /**
  * \brief **udffsck** entry point
  *
@@ -434,49 +473,53 @@ int main(int argc, char *argv[]) {
     }
 
     integrity_info_t *found = &stats.found;
+    int lvid_invalid = seq->lvid.error & (E_CRC | E_CHECKSUM | E_WRONGDESC);
 
     //---------- Corrections --------------
     msg("\nFilesystem status\n-----------------\n");
     get_volume_identifier(&disc, &stats, seq);  
     msg("Volume set identifier: %s\n", stats.volumeSetIdent);
     msg("Partition identifier: %s\n", stats.partitionIdent);
-    msg("Recorded next UniqueID:   %" PRIu64 "\n", lvid->nextUID);
-    if(fast_mode == 0) {
-        msg("Calculated next UniqueID: %" PRIu64 "\n", found->nextUID);
+
+    uint64_t lvidUsedBlocks  = lvid->partitionNumBlocks  - lvid->freeSpaceBlocks;
+    uint64_t foundUsedBlocks = found->partitionNumBlocks - found->freeSpaceBlocks;
+
+    integrity_msg("\n", "%s", (uint64_t) "Recorded",   (uint64_t) "Calculated", !lvid_invalid);
+    integrity_msg("",   "%s", (uint64_t) "----------", (uint64_t) "----------", !lvid_invalid);
+
+    integrity_msg("Next unique ID:",     "%" PRIu64,   lvid->nextUID,            found->nextUID,            !lvid_invalid);
+    integrity_msg("# files:",            "%" PRIu64,   lvid->numFiles,           found->numFiles,           !lvid_invalid);
+    integrity_msg("# directories:",      "%" PRIu64,   lvid->numDirs,            found->numDirs,            !lvid_invalid);
+    integrity_msg("UDF rev: min read:",  "%04" PRIx64, lvid->minUDFReadRev,      found->minUDFReadRev,      !lvid_invalid);
+    integrity_msg(".........min write:", "%04" PRIx64, lvid->minUDFWriteRev,     found->minUDFWriteRev,     !lvid_invalid);
+    integrity_msg(".........max write:", "%04" PRIx64, lvid->maxUDFWriteRev,     MAX_VERSION,               !lvid_invalid);
+    integrity_msg("Partition blocks:",   "%" PRIu64,   lvid->partitionNumBlocks, found->partitionNumBlocks, !lvid_invalid);
+    integrity_msg("............free:",   "%" PRIu64,   lvid->freeSpaceBlocks,    found->freeSpaceBlocks,    !lvid_invalid);
+    integrity_msg("............used:",   "%" PRIu64,   lvidUsedBlocks,           foundUsedBlocks,           !lvid_invalid);
+
+    if (lvid->numDirs != found->numDirs || lvid->numFiles != found->numFiles) {
+        seq->lvid.error |= E_FILES;
     }
-    msg("Last LVID recorded change: %s\n", print_timestamp(lvid->recordedTime));
-    msg("expected number of files: %u\n", lvid->numFiles);
-    msg("expected number of dirs:  %u\n", lvid->numDirs);
-    if(fast_mode == 0) {
-        msg("counted number of files: %u\n", found->numFiles);
-        msg("counted number of dirs:  %u\n", found->numDirs);
-        if(lvid->numDirs != found->numDirs || lvid->numFiles != found->numFiles) {
-            seq->lvid.error |= E_FILES;
-        }
-    }
-    msg("UDF rev: min read:  %04x\n", lvid->minUDFReadRev);
-    msg("         min write: %04x\n", lvid->minUDFWriteRev);
-    msg("         max write: %04x\n", lvid->maxUDFWriteRev);
-    if(fast_mode == 0) {
-        uint32_t foundUsedBlocks = get_used_blocks(&stats.found);
-        msg("Used Space: %"PRIu64" (%u)\n", foundUsedBlocks * stats.blocksize, foundUsedBlocks);
-    }
-    msg("Free Space: %"PRIu64" (%u)\n", lvid->freeSpaceBlocks * stats.blocksize, lvid->freeSpaceBlocks);
-    msg("Partition size: %"PRIu64" (%u)\n", lvid->partitionNumBlocks * stats.blocksize, lvid->partitionNumBlocks);
-    uint64_t expUsedSpace = 0;
-    if((fast_mode == 0) && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
-        expUsedSpace = get_used_blocks(lvid) * stats.blocksize;
-        msg("Expected Used Space: %"PRIu64" (%"PRIu64")\n", expUsedSpace, expUsedSpace / blocksize);
+
+    msg("\n");
+    if (!fast_mode && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
         msg("Space descriptor used blocks: %u\n", get_used_blocks(&stats.spacedesc));
         msg(".................free blocks: %u\n", stats.spacedesc.freeSpaceBlocks);
-    }
-    if((fast_mode == 0)  && (stats.partitionAccessType != PD_ACCESS_TYPE_READ_ONLY)) {
-        int64_t usedSpaceDiff = expUsedSpace - get_used_blocks(&stats.found) * stats.blocksize;
-        if(usedSpaceDiff != 0) {
-            err("%" PRId64 " blocks are unused but not marked as unallocated in Free Space Table.\n", usedSpaceDiff/blocksize);
-            err("Correct free space: %" PRId64 "\n", lvid->freeSpaceBlocks + usedSpaceDiff/blocksize);
-            seq->lvid.error |= E_FREESPACE;
+        msg("\n");
+
+        if (!lvid_invalid) {
+            int32_t lvidFreeDiff = stats.lvid.freeSpaceBlocks - stats.found.freeSpaceBlocks;
+            if (lvidFreeDiff < 0) {
+                err("%" PRId64 " blocks are free but counted as allocated in Free Space Table.\n", -lvidFreeDiff);
+                err("Correct free space: %" PRId64 "\n", stats.found.freeSpaceBlocks);
+                seq->lvid.error |= E_FREESPACE;
+            } else if (lvidFreeDiff > 0) {
+                err("%" PRId64 " blocks are allocated but counted as free in Free Space Table.\n", lvidFreeDiff);
+                err("Correct free space: %" PRId64 "\n", stats.found.freeSpaceBlocks);
+                seq->lvid.error |= E_FREESPACE;
+            }
         }
+
         int64_t spaceDescDiffBlocks = get_used_blocks(&stats.spacedesc) - get_used_blocks(&stats.found);
         if (spaceDescDiffBlocks > 0) {
             err("%" PRId64 " blocks are unused but marked as allocated in SBD.\n", spaceDescDiffBlocks);
@@ -592,7 +635,7 @@ int main(int argc, char *argv[]) {
     int fixlvid = 0;
     int fixpd = 0;
     int lviderr = 0;
-    if(seq->lvid.error == (E_CRC | E_CHECKSUM)) {
+    if (lvid_invalid) {
         //LVID is doomed.
         err("LVID is broken. Recovery is not possible.\n");
         error_status |= ES_LVID;

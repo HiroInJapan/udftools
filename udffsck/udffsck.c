@@ -1185,6 +1185,25 @@ int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint6
 
     disc->udf_lvid = malloc(len);
     memcpy(disc->udf_lvid, dev[chunk]+offset, len);
+
+    if (lvid->descTag.tagIdent != TAG_IDENT_LVID) {
+        err("LVID not found\n");
+        seq->lvid.error |= E_WRONGDESC;
+        unmap_chunk(dev, chunk, devsize);
+        // Attempt to continue, maybe we can rebuild it
+        return ESTATUS_OK;
+    }
+    else {
+        if (!checksum(lvid->descTag)) {
+            err("LVID checksum error. Continue with caution.\n");
+            seq->lvid.error |= E_CHECKSUM;
+        }
+        if (crc(lvid, lvid->descTag.descCRCLength + sizeof(tag))) {
+            err("LVID CRC error. Continue with caution.\n");
+            seq->lvid.error |= E_CRC;
+        }
+    }
+
     dbg("LVID: lenOfImpUse: %u\n",disc->udf_lvid->lengthOfImpUse);
     dbg("LVID: numOfPartitions: %u\n", disc->udf_lvid->numOfPartitions);
 
@@ -2446,10 +2465,12 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
             double cts = 0;
             if((cts = compare_timestamps(stats->lvid.recordedTime, ext ? efe->modificationTime : fe->modificationTime)) < 0) {
-                err("(%s) File timestamp is later than LVID timestamp. LVID needs to be fixed.\n", info.filename);
+                if (!seq->lvid.error) {
+                    err("(%s) File timestamp is later than LVID timestamp. LVID needs to be fixed.\n", info.filename);
 #ifdef DEBUG
-                err("CTS: %f\n", cts);
+                    err("CTS: %f\n", cts);
 #endif
+                }
                 seq->lvid.error |= E_TIMESTAMP; 
             }
             info.modTime = ext ? efe->modificationTime : fe->modificationTime;
