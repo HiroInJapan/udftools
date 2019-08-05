@@ -2074,7 +2074,7 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                     dwarn("New MAX UUID\n");
                 }
                 int fixuuid = 0;
-                if(uuid == 0) {
+                if ((uuid == 0) && (stats->found.minUDFReadRev > 0x0200)) {
                     err("(%s) FID Unique ID is 0. Next available is %" PRIu64 ".\n", info.filename,
                         stats->lvid.nextUID);
                     if(interactive) {
@@ -2090,6 +2090,9 @@ uint8_t inspect_fid(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t
                         *status |= ESTATUS_UNCORRECTED_ERRORS;
                     }
                     if(fixuuid) {
+// @todo This is a problem. It assumes LVID nextUID is accurate, which may not be so even if LVID is present.
+// Probably need to make two passes, one to map out the highest known UID, the other to assign new ones.
+// Another option would be to assign way-huge UIDs in the first pass and clean them up in the second.
                         uuid = stats->lvid.nextUID;
                         stats->found.nextUID = uuid;
                         stats->lvid.nextUID++;
@@ -2454,8 +2457,15 @@ uint8_t get_file(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t de
 
             uint64_t feUUID = (ext ? efe->uniqueID : fe->uniqueID);
             dbg("Unique ID: FE: %"PRIu64" FID: %"PRIu32"\n", (feUUID), uuid); //PRIu32 is fixing uint32_t printing
+            if (uuid == 0) {
+            	// Account UIDs that can't be handled during FID processing
+                if(stats->found.nextUID <= feUUID) {
+                    stats->found.nextUID = feUUID + 1;
+                    dwarn("New MAX UUID\n");
+                }
+            }
             int fixuuid = 0;
-            if(uuid != feUUID) {
+            if ((uuid != feUUID) && (uuid != 0)) {
                 err("(%s) FE Unique ID differs from FID Unique ID.\n", info.filename);
                 if(interactive) {
                     if(prompt("Fix it (set Unique ID to %u, value according to FID)? [Y/n] ", uuid) != 0) {
