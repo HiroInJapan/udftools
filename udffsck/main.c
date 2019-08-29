@@ -175,15 +175,10 @@ static void integrity_msg(const char* label, const char* valueFormat,
  */
 int main(int argc, char *argv[]) {
     char *path = NULL;
-    int fd;
+    udf_media_t media;
     FILE *fp;
     int status = 0;
-    int blocksize = -1;
-    struct udf_disc disc;
-    memset(&disc, 0, sizeof(struct udf_disc));
     struct stat stat;
-    uint8_t **dev;
-    uint64_t devsize;
     vds_sequence_t *seq; 
     struct filesystemStats stats;
     uint16_t error_status = 0;
@@ -192,6 +187,9 @@ int main(int argc, char *argv[]) {
     int third_avdp_missing = 0;
     struct sigaction new_action;
     int source = -1;
+
+    memset(&media, 0, sizeof(media));
+    media.sectorsize = -1;
 
     memset(&stats, 0, sizeof(struct filesystemStats));
     stats.found.nextUID = 0x10;     // Min valid unique ID
@@ -211,7 +209,7 @@ int main(int argc, char *argv[]) {
     sigaction (SIGSEGV, &new_action, NULL);
 #endif
 
-    parse_args(argc, argv, &path, &blocksize);
+    parse_args(argc, argv, &path, &media.sectorsize);
 #ifdef MEMTRACE
     dbg("Path: %p\n", path);    
 #endif
@@ -225,7 +223,7 @@ int main(int argc, char *argv[]) {
         exit(ESTATUS_USAGE);
     }
 
-    if(blocksize > 0) {
+    if (media.sectorsize > 0) {
         force_sectorsize = 1;
     }
 
@@ -255,7 +253,8 @@ int main(int argc, char *argv[]) {
         dbg("RW\n");
     }
 
-    if((fd = open(path, flags, 0660)) == -1) {
+    media.fd = open(path, flags, 0660);
+    if (media.fd == -1) {
         fatal("Error opening %s: %s.", path, strerror(errno));
         exit(ESTATUS_USAGE);
     } else {
@@ -264,13 +263,13 @@ int main(int argc, char *argv[]) {
         char filename2[64];
         const char *error;
 
-        if (fstat(fd, &stat) != 0) {
+        if (fstat(media.fd, &stat) != 0) {
             fatal("Cannot stat device '%s': %s\n", path, strerror(errno));
             exit(ESTATUS_USAGE);
         }
 
         flags2 = flags; 
-        if (snprintf(filename2, sizeof(filename2), "/proc/self/fd/%d", fd) >= (int)sizeof(filename2))
+        if (snprintf(filename2, sizeof(filename2), "/proc/self/fd/%d", media.fd) >= (int)sizeof(filename2))
         {
             fatal("Cannot open device '%s': %s\n", path, strerror(ENAMETOOLONG));
             exit(ESTATUS_USAGE);
@@ -301,8 +300,8 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        close(fd);
-        fd = fd2;
+        close(media.fd);
+        media.fd = fd2;
 
     }
 
@@ -313,12 +312,12 @@ int main(int argc, char *argv[]) {
 
     // Lock medium to ensure no-one is going to change during our operation.
     // Make nonblocking, so it will fail when medium is already locked.
-    if(flock(fd, LOCK_EX | LOCK_NB)) { 
+    if (flock(media.fd, LOCK_EX | LOCK_NB)) {
         fatal("Error locking %s, %s. Is another process using it?\n", path, strerror(errno));
         exit(ESTATUS_USAGE);
     }
 
-    note("FD: 0x%x\n", fd);
+    note("FD: 0x%x\n", media.fd);
 
     if(fseeko(fp, 0 , SEEK_END) != 0) {
         if(errno == EBADF) {
@@ -329,17 +328,17 @@ int main(int argc, char *argv[]) {
             exit(ESTATUS_USAGE);
         }
     } 
-    devsize = ftello(fp);
-    dbg("Size: 0x%" PRIx64 "\n", devsize);
+    media.devsize = ftello(fp);
+    dbg("Size: 0x%" PRIx64 "\n", media.devsize);
 
     uint32_t chunksize = CHUNK_SIZE;
-    uint32_t rest       = (uint32_t) devsize % chunksize;
-    uint32_t num_chunks = (uint32_t) ((devsize / chunksize) + (rest > 0 ? 1 : 0));
+    uint32_t rest       = (uint32_t) media.devsize % chunksize;
+    uint32_t num_chunks = (uint32_t) ((media.devsize / chunksize) + (rest > 0 ? 1 : 0));
     dbg("Chunk size %u, rest: %u\n", chunksize, rest);
-    dev = calloc(sizeof(uint8_t *), num_chunks);
+    media.mapping = calloc(sizeof(uint8_t *), num_chunks);
     dbg("Amount of chunks: %u\n", num_chunks);
     for(uint32_t i=0; i<num_chunks; i++) {
-        dev[i] = NULL;
+        media.mapping[i] = NULL;
     }
 
     //------------- Detections -----------------------
@@ -347,32 +346,32 @@ int main(int argc, char *argv[]) {
     seq = calloc(1, sizeof(vds_sequence_t));
 
     stats.AVDPSerialNum = 0xFFFF;
-    status = is_udf(fd, dev, &blocksize, devsize, force_sectorsize, &stats); //this function is checking for UDF recognition sequence. It also tries to detect blocksize
+    status = is_udf(&media, force_sectorsize, &stats); // Check for UDF recognition sequence. Also tries to detect blocksize.
     if(status < 0) {
         exit(status);
     } else if(status == 1) { //Unclosed or bridged medium 
-        status = get_avdp(fd, dev, &disc, &blocksize, devsize, -1, force_sectorsize, &stats); //load AVDP and verify blocksize
+        status = get_avdp(&media, -1, force_sectorsize, &stats); // load AVDP and verify blocksize
         source = FIRST_AVDP; // Unclosed medium has only one AVDP and that is saved at first position.
         if(status) {
             err("AVDP is broken. Aborting.\n");
             exit(ESTATUS_UNCORRECTED_ERRORS);
         }
     } else { //Normal medium
-        seq->anchor[0].error = get_avdp(fd, dev, &disc, &blocksize, devsize, FIRST_AVDP, force_sectorsize, &stats); //try load FIRST AVDP
+        seq->anchor[0].error = get_avdp(&media, FIRST_AVDP, force_sectorsize, &stats); //try load FIRST AVDP
         if(seq->anchor[0].error) {
             err("AVDP[0] is broken.\n");
         } else {
             force_sectorsize = 1;
         }
 
-        seq->anchor[1].error = get_avdp(fd, dev, &disc, &blocksize, devsize, SECOND_AVDP, force_sectorsize, &stats); //load AVDP
+        seq->anchor[1].error = get_avdp(&media, SECOND_AVDP, force_sectorsize, &stats); //load AVDP
         if(seq->anchor[1].error) {
             err("AVDP[1] is broken.\n");
         } else {
             force_sectorsize = 1;
         }
 
-        seq->anchor[2].error = get_avdp(fd, dev, &disc, &blocksize, devsize, THIRD_AVDP, force_sectorsize, &stats); //load AVDP
+        seq->anchor[2].error = get_avdp(&media, THIRD_AVDP, force_sectorsize, &stats); //load AVDP
         if(seq->anchor[2].error) {
             dbg("AVDP[2] somehow errored, not necessarily a bad thing.\n");
             if(seq->anchor[2].error < 255) { //Third AVDP is not necessarily present.
@@ -400,37 +399,44 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    msg("Sectorsize: %d\n", blocksize);
+    msg("Sectorsize: %d\n", media.sectorsize);
 
-    if(blocksize == -1) {
+    if (media.sectorsize == -1) {
         err("Device blocksize is not defined. Please define it with -b BLOCKSIZE parameter\n");
         exit(ESTATUS_USAGE);
     }
 
     // Correct blocksize MUST be blocksize%512 == 0. We keep definitive list for now.
-    if(!((blocksize == 512) | (blocksize == 1024) | (blocksize == 2048) | (blocksize == 4096))) {
-        err("Invalid blocksize. Supported values are 512, 1024, 2048, and 4096.\n");
-        exit(ESTATUS_USAGE);
+    switch (media.sectorsize) {
+        case 512:
+        case 1024:
+        case 2048:
+        case 4096:
+    	    break;
+
+        default:
+            err("Invalid blocksize. Supported values are 512, 1024, 2048, and 4096.\n");
+            exit(ESTATUS_USAGE);
     }
 
     note("\nTrying to load first VDS\n");
-    status |= get_vds(fd, dev, &disc, blocksize, devsize, source, MAIN_VDS, seq); //load main VDS
+    status |= get_vds(&media, source, MAIN_VDS, seq); //load main VDS
     note("\nTrying to load second VDS\n");
-    status |= get_vds(fd, dev, &disc, blocksize, devsize, source, RESERVE_VDS, seq); //load reserve VDS
+    status |= get_vds(&media, source, RESERVE_VDS, seq); //load reserve VDS
 
     dbg("First VDS verification\n");
-    verify_vds(&disc, MAIN_VDS, seq, &stats);
+    verify_vds(&media.disc, MAIN_VDS, seq, &stats);
     dbg("Second VDS verification\n");
-    verify_vds(&disc, RESERVE_VDS, seq, &stats);
+    verify_vds(&media.disc, RESERVE_VDS, seq, &stats);
 
     //Check if blocksize matches. If not, exit.
-    int blocksize_status = check_blocksize(fd, dev, &disc, blocksize, force_sectorsize, seq);
+    int blocksize_status = check_blocksize(&media, force_sectorsize, seq);
     if(blocksize_status != ESTATUS_OK)
         exit(status | blocksize_status);
 
 
     integrity_info_t *lvid = &stats.lvid;
-    status |= get_lvid(fd, dev, &disc, blocksize, devsize, lvid, seq); //load LVID
+    status |= get_lvid(&media, lvid, seq);
     if(lvid->minUDFReadRev > MAX_VERSION){
         err("Medium UDF revision is %04x and we are able to check up to %04x\n",
             lvid->minUDFReadRev, MAX_VERSION);
@@ -438,19 +444,19 @@ int main(int argc, char *argv[]) {
     }
 
 #ifdef PRINT_DISC
-    print_disc(&disc);
+    print_disc(&media.disc);
 #endif
 
-    stats.blocksize = blocksize;
+    stats.blocksize = media.sectorsize;
 
-    if(get_pd(fd, dev, &disc, devsize, &stats, seq)) {
+    if (get_pd(&media, &stats, seq)) {
         err("PD error\n");
         exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
     uint32_t lbnlsn = 0;
     dbg("STATUS: 0x%02x\n", status);
-    status |= get_fsd(fd, dev, &disc, devsize, &lbnlsn, &stats, seq);
+    status |= get_fsd(&media, &lbnlsn, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
     if(status >= ESTATUS_OPERATIONAL_ERROR) {
         err("Unable to continue without FSD. Consider submitting a bug report. Exiting.\n");
@@ -461,14 +467,14 @@ int main(int argc, char *argv[]) {
     }
 
     note("LBNLSN: %u\n", lbnlsn);
-    if(any_error(seq) || disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE || fast_mode == 0) {
-        status |= get_file_structure(fd, dev, &disc, devsize, lbnlsn, &stats, seq);
+    if (any_error(seq) || (media.disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) || !fast_mode) {
+        status |= get_file_structure(&media, lbnlsn, &stats, seq);
     }
 
     dbg("PD PartitionsContentsUse\n");
     for(int i=0; i<128; ) {
         for(int j=0; j<8; j++, i++) {
-            note("%02x ", disc.udf_pd[0]->partitionContentsUse[i]);
+            note("%02x ", media.disc.udf_pd[0]->partitionContentsUse[i]);
         }
         note("\n");
     }
@@ -478,7 +484,7 @@ int main(int argc, char *argv[]) {
 
     //---------- Corrections --------------
     msg("\nFilesystem status\n-----------------\n");
-    get_volume_identifier(&disc, &stats, seq);  
+    get_volume_identifier(&media.disc, &stats, seq);
     msg("Volume set identifier: %s\n", stats.volumeSetIdent);
     msg("Partition identifier: %s\n", stats.partitionIdent);
 
@@ -595,7 +601,7 @@ int main(int argc, char *argv[]) {
         if(fixavdp) {
             msg("Source: %d, Target1: %d, Target2: %d\n", source, target1, target2);
             if(target1 >= 0) {
-                if(write_avdp(fd, dev, &disc, blocksize, devsize, source, target1) != 0) {
+                if (write_avdp(&media, source, target1) != 0) {
                     fatal("AVDP recovery failed. Is medium writable?\n");
                 } else {
                     imp("AVDP recovery was successful.\n");
@@ -604,7 +610,7 @@ int main(int argc, char *argv[]) {
                 } 
             } 
             if(target2 >= 0) {
-                if(write_avdp(fd, dev, &disc, blocksize, devsize, source, target2) != 0) {
+                if (write_avdp(&media, source, target2) != 0) {
                     fatal("AVDP recovery failed. Is medium writable?\n");
                 } else {
                     imp("AVDP recovery was successful.\n");
@@ -616,22 +622,21 @@ int main(int argc, char *argv[]) {
 
         if(fixavdp) {
             if(seq->anchor[0].error & E_EXTLEN) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, FIRST_AVDP);
+                status |= fix_avdp(&media, FIRST_AVDP);
             }
             if(seq->anchor[1].error & E_EXTLEN) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, SECOND_AVDP);
+                status |= fix_avdp(&media, SECOND_AVDP);
             }
             if((seq->anchor[2].error & E_EXTLEN) && third_avdp_missing == 0) {
-                status |= fix_avdp(fd, dev, &disc, blocksize, devsize, THIRD_AVDP);
+                status |= fix_avdp(&media, THIRD_AVDP);
             }
         }
-
     }
 
 
     print_metadata_sequence(seq);
 
-    status |= fix_vds(fd, dev, &disc, devsize, blocksize, source, seq);
+    status |= fix_vds(&media, source, seq);
 
     int fixlvid = 0;
     int fixpd = 0;
@@ -640,7 +645,7 @@ int main(int argc, char *argv[]) {
         err("Max found Unique ID is same or bigger that Unique ID found at LVID.\n");
         lviderr = 1;
     }
-    if(disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) {
+    if (media.disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) {
         //There are some unfinished writes
         err("Opened integrity type. Some writes may be unfinished.\n");
         lviderr = 1;
@@ -681,12 +686,12 @@ int main(int argc, char *argv[]) {
 
 
     if(fixlvid == 1) {
-        if(fix_lvid(fd, dev, &disc, devsize, &stats, seq) == 0) {
+        if (fix_lvid(&media, &stats, seq) == 0) {
             error_status &= ~(ES_LVID | ES_PD); 
             fix_status |= (ES_LVID | ES_PD);
         }
     } else if(fixlvid == 0 && fixpd == 1) {
-        if(fix_pd(fd, dev, &disc, devsize, &stats, seq) == 0) {
+        if (fix_pd(&media, &stats, seq) == 0) {
             error_status &= ~(ES_PD); 
             fix_status |= ES_PD;
         }
@@ -728,36 +733,36 @@ int main(int argc, char *argv[]) {
     //---------------- Clean up -----------------
 
     note("Clean allocations\n");
-    free(dev);
+    free(media.mapping);
 
-    free(disc.udf_anchor[0]);
-    free(disc.udf_anchor[1]);
-    free(disc.udf_anchor[2]);
+    free(media.disc.udf_anchor[0]);
+    free(media.disc.udf_anchor[1]);
+    free(media.disc.udf_anchor[2]);
 
-    free(disc.udf_pvd[0]);
-    free(disc.udf_lvd[0]);
-    free(disc.udf_usd[0]);
-    free(disc.udf_iuvd[0]);
-    free(disc.udf_pd[0]);
-    free(disc.udf_td[0]);
+    free(media.disc.udf_pvd[0]);
+    free(media.disc.udf_lvd[0]);
+    free(media.disc.udf_usd[0]);
+    free(media.disc.udf_iuvd[0]);
+    free(media.disc.udf_pd[0]);
+    free(media.disc.udf_td[0]);
 
-    free(disc.udf_pvd[1]);
-    free(disc.udf_lvd[1]);
-    free(disc.udf_usd[1]);
-    free(disc.udf_iuvd[1]);
-    free(disc.udf_pd[1]);
-    free(disc.udf_td[1]);
+    free(media.disc.udf_pvd[1]);
+    free(media.disc.udf_lvd[1]);
+    free(media.disc.udf_usd[1]);
+    free(media.disc.udf_iuvd[1]);
+    free(media.disc.udf_pd[1]);
+    free(media.disc.udf_td[1]);
 
-    free(disc.udf_lvid);
-    free(disc.udf_fsd);
+    free(media.disc.udf_lvid);
+    free(media.disc.udf_fsd);
 
     free(seq);
     free(stats.actPartitionBitmap);
     free(stats.volumeSetIdent);
     free(stats.partitionIdent);
 
-    flock(fd, LOCK_UN);
-    close(fd);
+    flock(media.fd, LOCK_UN);
+    close(media.fd);
     fclose(fp);
 
     msg("All done\n");

@@ -87,6 +87,14 @@ typedef struct {
 
 } integrity_info_t;
 
+typedef struct {
+    int             fd;          // File descriptor for mmapped access to media
+    uint8_t       **mapping;     // mmapped chunks of the media
+    struct udf_disc disc;
+    uint64_t        devsize;     // Size of the whole device in bytes
+    int             sectorsize;
+} udf_media_t;
+
 struct filesystemStats {
     uint64_t blocksize;  // This is 64 bits to simplify block->byte conversions
     uint16_t AVDPSerialNum;
@@ -153,46 +161,35 @@ struct impUseLVID {
 char * print_timestamp(timestamp ts);
 uint32_t get_used_blocks(const integrity_info_t *info);
 int get_volume_identifier(struct udf_disc *disc, struct filesystemStats *stats, vds_sequence_t *seq );
-void unmap_chunk(uint8_t **dev, uint32_t chunk, uint64_t devsize);
-void map_chunk(int fd, uint8_t **dev, uint32_t chunk, uint64_t devsize, char * file, int line);
+void unmap_chunk(udf_media_t *media, uint32_t chunk);
+void map_chunk(udf_media_t *media, uint32_t chunk, char * file, int line);
 
 // UDF detection
-int is_udf(int fd, uint8_t **dev, int *sectorsize, uint64_t devsize, int force_sectorsize,
-           struct filesystemStats *stats);
-int get_avdp(int fd, uint8_t **dev, struct udf_disc *disc, int *sectorsize, uint64_t devsize,
-             avdp_type_e type, int force_sectorsize, struct filesystemStats *stats);
-int write_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
-               avdp_type_e source, avdp_type_e target);
-int fix_avdp(int fd, uint8_t **dev, struct udf_disc *disc, size_t sectorsize, uint64_t devsize,
-             avdp_type_e target);
+int is_udf(udf_media_t* media, int force_sectorsize, struct filesystemStats *stats);
+int get_avdp(udf_media_t *media, avdp_type_e type, int force_sectorsize,
+             struct filesystemStats *stats);
+int write_avdp(udf_media_t *media, avdp_type_e source, avdp_type_e target);
+int fix_avdp(udf_media_t *media, avdp_type_e target);
 
 // VDS functions
-int get_vds(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
-            avdp_type_e avdp, vds_type_e vds, vds_sequence_t *seq);
+int get_vds(udf_media_t *media, avdp_type_e avdp, vds_type_e vds, vds_sequence_t *seq);
 int verify_vds(struct udf_disc *disc, vds_type_e vds, vds_sequence_t *seq, struct filesystemStats *stats);
-int fix_vds(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize, size_t sectorsize,
-            avdp_type_e source, vds_sequence_t *seq);
+int fix_vds(udf_media_t *media, avdp_type_e source, vds_sequence_t *seq);
 
 // LVID functions
-int get_lvid(int fd, uint8_t **dev, struct udf_disc *disc, int sectorsize, uint64_t devsize,
-             integrity_info_t *info, vds_sequence_t *seq );
-int fix_lvid(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
-             struct filesystemStats *stats, vds_sequence_t *seq);
+int get_lvid(udf_media_t *media, integrity_info_t *info, vds_sequence_t *seq );
+int fix_lvid(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *seq);
 
 // PD (SBD) functions
-int get_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
-           struct filesystemStats *stats, vds_sequence_t *seq);
-int fix_pd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
-           struct filesystemStats *stats, vds_sequence_t *seq);
+int get_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *seq);
+int fix_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *seq);
 
 // Filetree functions
-uint8_t get_fsd(int fd, uint8_t **dev, struct udf_disc *disc, uint64_t devsize,
-                uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq);
-uint8_t get_file_structure(int fd, uint8_t **dev, const struct udf_disc *disc, uint64_t devsize,
-                           uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq );
+uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq);
+uint8_t get_file_structure(udf_media_t *media, uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq );
 
 // Check for match on blocksize
-int check_blocksize(int fd, uint8_t **dev, struct udf_disc *disc, int blocksize, int force_sectorsize, vds_sequence_t *seq);
+int check_blocksize(udf_media_t *media, int force_sectorsize, vds_sequence_t *seq);
 
 // Check and correct d-string
 uint8_t check_dstring(dstring *in, size_t field_size);
