@@ -454,9 +454,8 @@ int main(int argc, char *argv[]) {
         exit(ESTATUS_OPERATIONAL_ERROR);
     }
 
-    uint32_t lbnlsn = 0;
     dbg("STATUS: 0x%02x\n", status);
-    status |= get_fsd(&media, &lbnlsn, &stats, seq);
+    status |= get_fsd(&media, &stats, seq);
     dbg("STATUS: 0x%02x\n", status);
     if(status >= ESTATUS_OPERATIONAL_ERROR) {
         err("Unable to continue without FSD. Consider submitting a bug report. Exiting.\n");
@@ -466,9 +465,9 @@ int main(int argc, char *argv[]) {
         exit(status);
     }
 
-    note("LBNLSN: %u\n", lbnlsn);
+    note("LBN 0: LSN %u\n", stats.lbnlsn);
     if (any_error(seq) || (media.disc.udf_lvid->integrityType != LVID_INTEGRITY_TYPE_CLOSE) || !fast_mode) {
-        status |= get_file_structure(&media, lbnlsn, &stats, seq);
+        status |= get_file_structure(&media, &stats, seq);
     }
 
     dbg("PD PartitionsContentsUse\n");

@@ -97,6 +97,7 @@ typedef struct {
 
 struct filesystemStats {
     uint64_t blocksize;  // This is 64 bits to simplify block->byte conversions
+    uint32_t lbnlsn;     // Offset in blocks of partition block 0 from volume sector 0
     uint16_t AVDPSerialNum;
     uint32_t partitionAccessType;
     uint8_t * actPartitionBitmap;
@@ -185,8 +186,8 @@ int get_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *se
 int fix_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *seq);
 
 // Filetree functions
-uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn, struct filesystemStats * stats, vds_sequence_t *seq);
-uint8_t get_file_structure(udf_media_t *media, uint32_t lbnlsn, struct filesystemStats *stats, vds_sequence_t *seq );
+uint8_t get_fsd(udf_media_t *media, struct filesystemStats * stats, vds_sequence_t *seq);
+uint8_t get_file_structure(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *seq );
 
 // Check for match on blocksize
 int check_blocksize(udf_media_t *media, int force_sectorsize, vds_sequence_t *seq);

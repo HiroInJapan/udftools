@@ -36,11 +36,11 @@
 
 // Local function prototypes
 uint8_t get_file(udf_media_t *media,
-                 uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
+                 uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
                  uint32_t uuid, struct fileInfo info, vds_sequence_t *seq );
 void increment_used_space(struct filesystemStats *stats, uint64_t increment, uint32_t position);
 uint8_t inspect_fid(udf_media_t *media,
-                    uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos,
+                    uint32_t lsn, uint8_t *base, uint32_t *pos,
                     struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq, uint8_t *status);
 void print_file_chunks(struct filesystemStats *stats);
 int copy_descriptor(udf_media_t *media,
@@ -1426,7 +1426,6 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  *  Also checks for dstring defects.
  *
  * \param[in]  media     Information regarding medium & access to it
- * \param[out] lbnlsn    LBN starting offset
  * \param[in] *stats     file system status
  * \param[in] *seq       VDS sequence
  *
@@ -1434,7 +1433,7 @@ uint8_t markUsedBlock(struct filesystemStats *stats, uint32_t lbn, uint32_t size
  * \return 4 no correct PD or LVD found
  * \return 8 error during FSD identification
  */
-uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
+uint8_t get_fsd(udf_media_t *media,
                 struct filesystemStats * stats, vds_sequence_t *seq) {
     long_ad *lap;
     int vds = -1;
@@ -1447,11 +1446,11 @@ uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
         return ESTATUS_UNCORRECTED_ERRORS;
     }
     dbg("PD partNum: %u\n", media->disc.udf_pd[vds]->partitionNumber);
-    uint32_t lsnBase = 0;
-    lsnBase = media->disc.udf_pd[vds]->partitionStartingLocation;
+    uint32_t lbnlsn = 0;
+    lbnlsn = media->disc.udf_pd[vds]->partitionStartingLocation;
     dbg("Partition Length: %u\n", media->disc.udf_pd[vds]->partitionLength);
 
-    dbg("LSN base: %u\n", lsnBase);
+    dbg("LBN 0: LSN %u\n", lbnlsn);
 
     vds = -1;
     if((vds=get_correct(seq, TAG_IDENT_LVD)) < 0) {
@@ -1477,9 +1476,9 @@ uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
             lap->extLocation.partitionReferenceNum);
 
     dbg("LAP: length: %x, LBN: %x, PRN: %x\n", filesetlen, filesetblock.logicalBlockNum, filesetblock.partitionReferenceNum);
-    dbg("LAP: LSN: %u\n", lsnBase/*+filesetblock.logicalBlockNum*/);
+    dbg("LAP: LSN: %u\n", lbnlsn/*+filesetblock.logicalBlockNum*/);
 
-    position = (lsnBase + filesetblock.logicalBlockNum) * stats->blocksize;
+    position = (lbnlsn + filesetblock.logicalBlockNum) * stats->blocksize;
     chunk  = (uint32_t)(position / chunksize);
     offset = (uint32_t)(position % chunksize);
     map_chunk(media, chunk, __FILE__, __LINE__);
@@ -1519,7 +1518,7 @@ uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
 
     increment_used_space(stats, filesetlen, lap->extLocation.logicalBlockNum);
 
-    *lbnlsn = lsnBase;
+    stats->lbnlsn = lbnlsn;
 
     unmap_chunk(media, chunk);
 
@@ -1542,7 +1541,6 @@ uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
  * of the specified array.
  *
  * \param[in]      media            Information regarding medium & access to it
- * \param[in]      lsnBase          LBN offset to LSN
  * \param[in]      aedlbn           LBN of AED
  * \param[in,out]  *lengthADArray   size of allocation descriptor array ADArray
  * \param[in,out]  **ADAarray       allocation descriptors array itself (heap memory)
@@ -1555,14 +1553,14 @@ uint8_t get_fsd(udf_media_t *media, uint32_t *lbnlsn,
  * \return 4 -- checksum failed
  * \return 4 -- CRC failed
  */
-static uint8_t inspect_aed(udf_media_t *media, uint32_t lsnBase,
+static uint8_t inspect_aed(udf_media_t *media,
                            uint32_t aedlbn, uint32_t *lengthADArray, uint8_t **ADArray,
                            struct filesystemStats *stats, uint8_t *status) {
     uint32_t lad = 0;
     uint32_t offset = 0, chunk = 0, chunksize = CHUNK_SIZE;
     uint64_t position;
 
-    position = (lsnBase + aedlbn) * stats->blocksize;
+    position = (stats->lbnlsn + aedlbn) * stats->blocksize;
     chunk  = (uint32_t) (position / chunksize);
     offset = (uint32_t) (position % chunksize);
     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -1617,7 +1615,7 @@ static uint8_t inspect_aed(udf_media_t *media, uint32_t lsnBase,
         increment_used_space(stats, stats->blocksize, aedlbn);
         return 0;
     } else {
-        err("Expected AED in LSN %u, but did not find one.\n", lsnBase + aedlbn);
+        err("Expected AED in LSN %u, but did not find one.\n", stats->lbnlsn + aedlbn);
     }
     return 4;
 }
@@ -1630,7 +1628,6 @@ static uint8_t inspect_aed(udf_media_t *media, uint32_t lsnBase,
  * returned to the caller.
  *
  * \param[in]   media              Information regarding medium & access to it
- * \param[in]   lbnlsn             LBN offset against LSN
  * \param[in]   *feAllocDescs      allocation descriptors for the directory contents, in FE/EFE
  *                                 This is a pointer to memory mapped directly from the device
  * \param[in]   lengthAllocDescs   length of feAllocDescs area in bytes
@@ -1645,7 +1642,7 @@ static uint8_t inspect_aed(udf_media_t *media, uint32_t lsnBase,
  * \return 2 -- Heap allocation failed
  * \return 255 -- inspect_aed() failed
  */
-static uint8_t collect_extents(udf_media_t *media, uint32_t lbnlsn,
+static uint8_t collect_extents(udf_media_t *media,
                                const uint8_t *feAllocDescs, uint32_t lengthAllocDescs,
                                uint16_t icb_ad, uint8_t **ADArray, int *nAD,
                                struct filesystemStats *stats, uint8_t *status)
@@ -1719,7 +1716,7 @@ static uint8_t collect_extents(udf_media_t *media, uint32_t lbnlsn,
             memset(*ADArray + i*descSize, 0, descSize);
 
             lengthADArray -= descSize;  // Force this (chain) entry to be overwritten
-            if (inspect_aed(media, lbnlsn, aedlbn, &lengthADArray, ADArray, stats, status)) {
+            if (inspect_aed(media, aedlbn, &lengthADArray, ADArray, stats, status)) {
                 err("AED inspection failed.\n");
                 return 255;
             }
@@ -1745,7 +1742,6 @@ static uint8_t collect_extents(udf_media_t *media, uint32_t lbnlsn,
  * This function internally calls inspect_fid().
  *
  * \param[in]   media              Information regarding medium & access to it
- * \param[in]   lbnlsn             LBN offset against LSN
  * \param[in]   lsn                actual LSN
  * \param[in]   *allocDescs        allocation descriptors for the directory contents, in FE/EFE
  * \param[in]   lengthAllocDescs   length of allocation descriptors area in bytes
@@ -1761,7 +1757,7 @@ static uint8_t collect_extents(udf_media_t *media, uint32_t lbnlsn,
  * \return 255 -- inspect_aed() failed
  */
 static uint8_t walk_directory(udf_media_t *media,
-                              uint32_t lbnlsn, uint32_t lsn, uint8_t *allocDescs,
+                              uint32_t lsn, uint8_t *allocDescs,
                               uint32_t lengthAllocDescs, uint16_t icb_ad,
                               struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
                               uint8_t *status) {
@@ -1773,7 +1769,6 @@ static uint8_t walk_directory(udf_media_t *media,
     short_ad *sad = NULL;
     long_ad *lad = NULL;
     ext_ad *ead = NULL;
-    uint32_t lsnBase = lbnlsn;
     uint32_t offset = 0, chunk = 0, chunksize = CHUNK_SIZE;
     uint64_t position = 0;
 
@@ -1781,7 +1776,7 @@ static uint8_t walk_directory(udf_media_t *media,
     uint8_t *ADArray = NULL;
 
     // Collect all of the ICB's allocation descriptors into a single array
-    int extentErr = collect_extents(media, lbnlsn, allocDescs, lengthAllocDescs, icb_ad,
+    int extentErr = collect_extents(media, allocDescs, lengthAllocDescs, icb_ad,
                                     &ADArray, &nAD, stats, status);
     if (extentErr) {
         free(ADArray);
@@ -1860,7 +1855,7 @@ static uint8_t walk_directory(udf_media_t *media,
 
         if (extType == 0) {
             // Allocated and Recorded
-            position = (lsnBase + extStartLBN) * stats->blocksize;
+            position = (stats->lbnlsn + extStartLBN) * stats->blocksize;
             chunk  = (uint32_t)(position / chunksize);
             offset = (uint32_t)(position % chunksize);
             dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -1882,7 +1877,7 @@ static uint8_t walk_directory(udf_media_t *media,
     int counter = 0;
     for(uint32_t pos=0; pos < dirContentLen; ) {
         dbg("FID #%d\n", counter++);
-        if (inspect_fid(media, lbnlsn, lsn, dirContent, &pos, stats, depth+1, seq, &tempStatus) != 0) {
+        if (inspect_fid(media, lsn, dirContent, &pos, stats, depth+1, seq, &tempStatus) != 0) {
             dbg("1 FID inspection over.\n");
             break;
         }
@@ -1920,7 +1915,7 @@ static uint8_t walk_directory(udf_media_t *media,
 
             if (extType == 0) {
                 // Allocated and Recorded
-                position = (lsnBase + extStartLBN) * stats->blocksize;
+                position = (stats->lbnlsn + extStartLBN) * stats->blocksize;
                 chunk  = (uint32_t)(position / chunksize);
                 offset = (uint32_t)(position % chunksize);
                 dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -1953,7 +1948,6 @@ static uint8_t walk_directory(udf_media_t *media,
  * This function is a complement to get_file() and translate_fid().
  *
  * \param[in]     media     Information regarding medium & access to it
- * \param[in]     lbnlsn    LBN offset against LSN
  * \param[in]     lsn       actual LSN
  * \param[in]     *base     base pointer for for FID area
  * \param[in,out] *pos      actual position in FID area
@@ -1968,11 +1962,10 @@ static uint8_t walk_directory(udf_media_t *media,
  * \return 251 -- FID CRC failed
  */
 uint8_t inspect_fid(udf_media_t *media,
-                    uint32_t lbnlsn, uint32_t lsn, uint8_t *base, uint32_t *pos,
+                    uint32_t lsn, uint8_t *base, uint32_t *pos,
                     struct filesystemStats *stats, uint32_t depth, vds_sequence_t *seq,
                     uint8_t *status) {
     uint32_t flen, padding;
-    uint32_t lsnBase = lbnlsn; 
     struct fileIdentDesc *fid = (struct fileIdentDesc *)(base + *pos);
     struct fileInfo info;
     memset(&info, 0, sizeof(struct fileInfo));
@@ -2061,16 +2054,17 @@ uint8_t inspect_fid(udf_media_t *media,
 
         info.fileCharacteristics = fid->fileCharacteristics;
         if((fid->fileCharacteristics & FID_FILE_CHAR_DELETED) == 0) { //NOT deleted, continue
-            dbg("ICB: LSN: %u, length: %u\n", fid->icb.extLocation.logicalBlockNum + lsnBase, fid->icb.extLength);
+            dbg("ICB: LSN: %u, length: %u\n", fid->icb.extLocation.logicalBlockNum + stats->lbnlsn,
+                fid->icb.extLength);
             dbg("ROOT ICB: LSN: %u\n",
-                media->disc.udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum + lsnBase);
+                media->disc.udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum + stats->lbnlsn);
 
             if(*pos == 0) {
                 dbg("Parent. Not Following this one\n");
-            }else if(fid->icb.extLocation.logicalBlockNum + lsnBase == lsn) {
+            } else if ((fid->icb.extLocation.logicalBlockNum + stats->lbnlsn) == lsn) {
                 dbg("Self. Not following this one\n");
-            } else if (   fid->icb.extLocation.logicalBlockNum + lsnBase
-                       == (media->disc.udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum + lsnBase)) {
+            } else if (   (fid->icb.extLocation.logicalBlockNum + stats->lbnlsn)
+                       == (media->disc.udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum + stats->lbnlsn)) {
                 dbg("ROOT. Not following this one.\n");
             } else {
                 uint32_t uuid = 0;
@@ -2131,8 +2125,8 @@ uint8_t inspect_fid(udf_media_t *media,
                     }
                 }
                 dbg("ICB to follow.\n");
-                int tmp_status = get_file(media, lbnlsn,
-                                          (fid->icb).extLocation.logicalBlockNum + lsnBase, stats,
+                int tmp_status = get_file(media,
+                                          fid->icb.extLocation.logicalBlockNum + stats->lbnlsn, stats,
                                           depth, uuid, info, seq);
                 if(tmp_status == 32) { //32 means delete this FID
                     fid->fileCharacteristics |= FID_FILE_CHAR_DELETED; //Set deleted flag
@@ -2141,7 +2135,7 @@ uint8_t inspect_fid(udf_media_t *media,
                     fid->descTag.tagChecksum = calculate_checksum(fid->descTag);
                     dbg("Location: %u\n", fid->descTag.tagLocation);
 
-                    position = (fid->descTag.tagLocation + lbnlsn) * stats->blocksize;
+                    position = (fid->descTag.tagLocation + stats->lbnlsn) * stats->blocksize;
                     chunk  = (uint32_t)(position / chunksize);
                     offset = (uint32_t)(position % chunksize);
                     dbg("Chunk: %u, offset: 0x%x\n", chunk, offset);
@@ -2255,7 +2249,6 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t decrement, uin
  * When it finds a directory, it calls walk_directory() to process its contents.
  *
  * \param[in]      media     Information regarding medium & access to it
- * \param[in]      lbnlsn    LBN offset against LSN
  * \param[in]      lsn       actual LSN
  * \param[in,out]  *stats    file system status
  * \param[in]      depth     depth of FE for printing
@@ -2270,7 +2263,7 @@ void decrement_used_space(struct filesystemStats *stats, uint64_t decrement, uin
  * \return sum of status returned from inspect_fid(), translate_fid() or own actions (4 for unfixed error, 1 for fixed error, 0 for no error)
  */
 uint8_t get_file(udf_media_t *media,
-                 uint32_t lbnlsn, uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
+                 uint32_t lsn, struct filesystemStats *stats, uint32_t depth,
                  uint32_t uuid, struct fileInfo info, vds_sequence_t *seq ) {
     tag *descTag;
     struct fileEntry *fe;
@@ -2282,7 +2275,6 @@ uint8_t get_file(udf_media_t *media,
         return ESTATUS_UNCORRECTED_ERRORS;
     }
 
-    uint32_t lsnBase = lbnlsn; 
     uint8_t dir = 0;
     uint8_t status = 0;
     uint32_t chunksize = CHUNK_SIZE;
@@ -2305,7 +2297,7 @@ uint8_t get_file(udf_media_t *media,
 
     dbg("global FE increment.\n");
     dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
-    increment_used_space(stats, stats->blocksize, lsn-lbnlsn);
+    increment_used_space(stats, stats->blocksize, lsn - stats->lbnlsn);
     dbg("usedSpace: %u\n", get_used_blocks(&stats->found));
     switch(le16_to_cpu(descTag->tagIdent)) {
         case TAG_IDENT_FE:
@@ -2511,14 +2503,14 @@ uint8_t get_file(udf_media_t *media,
 
                 if(dir) {
                     fid_inspected = 1;
-                    walk_directory(media, lbnlsn, lsn, allocDescs, L_AD,
+                    walk_directory(media, lsn, allocDescs, L_AD,
                                    icbTagADFlags, stats, depth, seq, &status);
                 } else {
                     uint32_t lengthADArray = 0;
                     uint8_t *ADArray = NULL;  // Heap-allocated memory we must free
                     int nAD = 0;
 
-                    int extentErr = collect_extents(media, lbnlsn, allocDescs, L_AD,
+                    int extentErr = collect_extents(media, allocDescs, L_AD,
                                                     icbTagADFlags, &ADArray, &nAD, stats, &status);
                     if (extentErr) {
                         nAD = 0;
@@ -2572,7 +2564,7 @@ uint8_t get_file(udf_media_t *media,
             } else if(icbTagADFlags == ICBTAG_FLAG_AD_EXTENDED) {
                 if(dir) {
                     fid_inspected = 1;
-                    walk_directory(media, lbnlsn, lsn, allocDescs, L_AD,
+                    walk_directory(media, lsn, allocDescs, L_AD,
                                    ICBTAG_FLAG_AD_EXTENDED, stats, depth, seq, &status);
                 } else {
                     err("EAD found. Please report.\n");
@@ -2602,7 +2594,7 @@ uint8_t get_file(udf_media_t *media,
 
                 uint8_t tempStatus = 0;
                 for(uint32_t pos=0; pos < lengthAllocDescs; ) {
-                    uint8_t failureCode = inspect_fid(media, lbnlsn, lsn,
+                    uint8_t failureCode = inspect_fid(media, lsn,
                                                       dirContent, &pos, stats, depth+1, seq,
                                                       &tempStatus);
                     if(failureCode) {
@@ -2634,17 +2626,15 @@ uint8_t get_file(udf_media_t *media,
  * This function is entry for file tree parsing. It actually parses two trees, Stream file tree based on Stream Directory ICB and normal File tree based on Root Directory ICB.
  *
  * \param[in]      media     Information regarding medium & access to it
- * \param[in]      lbnlsn    LBN offset from LSN
  * \pararm[in,out] *stats    file system status
  * \param[in]      *seq      VDS sequence
  *
  * \return sum of returns from stream and normal get_file()
  */
-uint8_t get_file_structure(udf_media_t *media, uint32_t lbnlsn,
+uint8_t get_file_structure(udf_media_t *media,
                            struct filesystemStats *stats, vds_sequence_t *seq ) {
     uint32_t lsn, slsn;
 
-    uint32_t lsnBase = lbnlsn; 
     int status = 0;
     uint32_t elen = 0, selen = 0;
 
@@ -2666,8 +2656,8 @@ uint8_t get_file_structure(udf_media_t *media, uint32_t lbnlsn,
     dbg("icbloc: %u\n", icbloc.logicalBlockNum);
     dbg("sicbloc: %u\n", sicbloc.logicalBlockNum);
 
-    lsn = icbloc.logicalBlockNum+lsnBase;
-    slsn = sicbloc.logicalBlockNum+lsnBase;
+    lsn   = icbloc.logicalBlockNum  + stats->lbnlsn;
+    slsn  = sicbloc.logicalBlockNum + stats->lbnlsn;
     elen  = media->disc.udf_fsd->rootDirectoryICB.extLength;
     selen = media->disc.udf_fsd->streamDirectoryICB.extLength;
     dbg("ROOT LSN: %u, len: %u, partition: %u\n", lsn, elen, icbloc.partitionReferenceNum);
@@ -2679,11 +2669,11 @@ uint8_t get_file_structure(udf_media_t *media, uint32_t lbnlsn,
 
     if(selen > 0) {
         msg("\nStream file tree\n----------------\n");
-        status |= get_file(media, lbnlsn, slsn, stats, 0, 0, info, seq);
+        status |= get_file(media, slsn, stats, 0, 0, info, seq);
     }
     if(elen > 0) {
         msg("\nMedium file tree\n----------------\n");
-        status |= get_file(media, lbnlsn, lsn, stats, 0, 0, info, seq);
+        status |= get_file(media, lsn, stats, 0, 0, info, seq);
     }
     return status;
 }
@@ -3246,8 +3236,8 @@ int fix_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *se
     }
 
     if(phd->unallocSpaceBitmap.extLength > 3) { //0,1,2,3 are special values ECMA 167r3 4/14.14.1.1
-        uint32_t lsnBase = media->disc.udf_pd[vds]->partitionStartingLocation;
-        uint64_t position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
+        uint32_t lbnlsn   = media->disc.udf_pd[vds]->partitionStartingLocation;
+        uint64_t position = (lbnlsn + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
 
         chunk  = (uint32_t) (position / chunksize);
         offset = (uint32_t) (position % chunksize);
@@ -3263,9 +3253,9 @@ int fix_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *se
         dbg("[SBD] Chunk: %u, Offset: %u\n", chunk, offset);
 
 #ifdef MEMTRACE    
-        dbg("Bitmap: %u, %p\n", (lsnBase + phd->unallocSpaceBitmap.extPosition), sbd->bitmap);
+        dbg("Bitmap: %u, %p\n", lbnlsn + phd->unallocSpaceBitmap.extPosition, sbd->bitmap);
 #else
-        dbg("Bitmap: %u\n", (lsnBase + phd->unallocSpaceBitmap.extPosition));
+        dbg("Bitmap: %u\n", lbnlsn + phd->unallocSpaceBitmap.extPosition);
 #endif
         memcpy(sbd->bitmap, stats->actPartitionBitmap, sbd->numOfBytes);
         dbg("MEMCPY DONE\n");
@@ -3338,9 +3328,9 @@ int get_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *se
         return -128;
     }
     if(phd->unallocSpaceBitmap.extLength > 3) { //0,1,2,3 are special values ECMA 167r3 4/14.14.1.1
-        uint32_t lsnBase = media->disc.udf_pd[vds]->partitionStartingLocation;
-        dbg("LSNBase: %u\n", lsnBase);
-        position = (lsnBase + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
+        uint32_t lbnlsn = media->disc.udf_pd[vds]->partitionStartingLocation;
+        dbg("LBN 0: LSN %u\n", lbnlsn);
+        position = (lbnlsn + phd->unallocSpaceBitmap.extPosition) * stats->blocksize;
         chunk  = (uint32_t)(position / chunksize);
         offset = (uint32_t)(position % chunksize);
         map_chunk(media, chunk, __FILE__, __LINE__);
@@ -3366,9 +3356,9 @@ int get_pd(udf_media_t *media, struct filesystemStats *stats, vds_sequence_t *se
         dbg("[SBD] NumOfBits: %u\n", sbd->numOfBits);
         dbg("[SBD] NumOfBytes: %u\n", sbd->numOfBytes);
 #ifdef MEMTRACE
-        dbg("Bitmap: %u, %p\n", (lsnBase + phd->unallocSpaceBitmap.extPosition), sbd->bitmap);
+        dbg("Bitmap: %u, %p\n", lbnlsn + phd->unallocSpaceBitmap.extPosition, sbd->bitmap);
 #else
-        dbg("Bitmap: %u\n", (lsnBase + phd->unallocSpaceBitmap.extPosition));
+        dbg("Bitmap: %u\n", lbnlsn + phd->unallocSpaceBitmap.extPosition);
 #endif
 
         stats->spacedesc.partitionNumBlocks = sbd->numOfBits;
